@@ -25,9 +25,14 @@ if [ ! -d "$mount_dir" ]; then
     sudo mkdir -p "$mount_dir"
 fi
 
+# Prompt for SMB credentials
+read -p "Enter SMB username: " smb_username
+read -s -p "Enter SMB password: " smb_password
+echo
+
 # Mount the file server share with credentials
 echo "Mounting the file server share..."
-sudo mount -t cifs //$file_server/$share_name $mount_dir -o username=fortigate,password=!q2w3e4r
+sudo mount -t cifs //$file_server/$share_name $mount_dir -o username=$smb_username,password=$smb_password
 if [ $? -ne 0 ]; then
     echo "Failed to mount the file server share. Exiting."
     exit 1
