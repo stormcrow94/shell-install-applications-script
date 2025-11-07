@@ -402,7 +402,7 @@ Este projeto está licenciado sob a Licença MIT - veja o arquivo LICENSE para d
 
 ## 👤 Autor
 
-**Luciano**
+**Stormcrowm94**
 
 ## 🙏 Agradecimentos
 
