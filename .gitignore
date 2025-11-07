@@ -1,0 +1,126 @@
+# Shell Install Applications Script - .gitignore
+
+# ===================================
+# Logs
+# ===================================
+logs/
+*.log
+*.log.*
+
+# ===================================
+# Backups
+# ===================================
+*.bak
+*.backup
+*.backup.*
+*~
+
+# ===================================
+# Arquivos temporários
+# ===================================
+*.tmp
+*.temp
+/tmp/
+.tmp/
+
+# ===================================
+# Configurações locais
+# ===================================
+config/settings.local.conf
+config/*.local.conf
+.env
+.env.local
+
+# ===================================
+# Arquivos de sistema
+# ===================================
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ===================================
+# Montagens
+# ===================================
+/mnt/
+mount/
+
+# ===================================
+# Editor e IDE
+# ===================================
+# VSCode
+.vscode/
+*.code-workspace
+
+# IntelliJ IDEA
+.idea/
+*.iml
+
+# Vim
+*.swp
+*.swo
+*~
+.*.sw?
+
+# Emacs
+*~
+\#*\#
+.\#*
+
+# Nano
+*.save
+
+# Sublime Text
+*.sublime-project
+*.sublime-workspace
+
+# ===================================
+# Credenciais e dados sensíveis
+# ===================================
+*password*
+*secret*
+*credentials*
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+
+# Exceções (manter arquivos de configuração exemplo)
+!config/settings.conf
+!README.md
+
+# ===================================
+# Arquivos de build e instalação
+# ===================================
+*.deb
+*.rpm
+*.tar.gz
+*.zip
+build/
+dist/
+
+# ===================================
+# Cache e arquivos gerados
+# ===================================
+__pycache__/
+*.pyc
+.cache/
+.pytest_cache/
+
+# ===================================
+# Arquivos específicos do projeto
+# ===================================
+# Arquivos de teste local
+test_*.sh
+debug_*.sh
+
+# Diretório de testes
+/test/
+/tests/
+
+# ===================================
+# Git
+# ===================================
+*.orig
+*.rej
+
