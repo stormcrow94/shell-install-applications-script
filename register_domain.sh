@@ -434,9 +434,91 @@ EOFSMB
     chmod 600 "$temp_pass_file"
     printf '%s\n' "$PASSWORD" > "$temp_pass_file"
     
-    # Método PREFERENCIAL: net ads join com expect (UMA tentativa)
-    print_info "Tentando ingressar no domínio com net ads join..."
-    log_info "Executando: net ads join -U $USERNAME"
+    print_separator
+    print_info "Validando credenciais antes do ingresso..."
+    log_info "Testando autenticação Kerberos (kinit)"
+    
+    # Testar credenciais com kinit PRIMEIRO (evita múltiplas tentativas)
+    local auth_success=false
+    local user_format=""
+    
+    # Tentar diferentes formatos de usuário
+    for format in "$USERNAME" "$USERNAME@$DOMAIN" "$USERNAME@${DOMAIN^^}"; do
+        print_info "Testando formato: $format"
+        log_info "Tentando kinit com formato: $format"
+        
+        if command -v expect > /dev/null 2>&1; then
+            local expect_kinit=$(mktemp)
+            cat > "$expect_kinit" << 'EXPECTKINIT'
+set timeout 30
+set username [lindex $argv 0]
+set password [lindex $argv 1]
+log_user 0
+
+spawn kinit $username
+expect {
+    "*Password*:" { send "$password\r"; exp_continue }
+    "*password*:" { send "$password\r"; exp_continue }
+    "Password for *:" { send "$password\r"; exp_continue }
+    eof
+}
+
+set wait_result [wait]
+set exit_status [lindex $wait_result 3]
+exit $exit_status
+EXPECTKINIT
+            
+            if expect "$expect_kinit" "$format" "$PASSWORD" >> "$LOG_FILE" 2>&1; then
+                auth_success=true
+                user_format="$format"
+                rm -f "$expect_kinit"
+                print_success "✓ Credenciais validadas com formato: $format"
+                log_success "Autenticação Kerberos OK com formato: $format"
+                break
+            fi
+            rm -f "$expect_kinit"
+        else
+            # Sem expect, tentar com printf
+            if printf '%s\n' "$PASSWORD" | kinit "$format" >> "$LOG_FILE" 2>&1; then
+                auth_success=true
+                user_format="$format"
+                print_success "✓ Credenciais validadas com formato: $format"
+                log_success "Autenticação Kerberos OK com formato: $format"
+                break
+            fi
+        fi
+    done
+    
+    if [ "$auth_success" = false ]; then
+        rm -f "$temp_pass_file"
+        print_error "✗ FALHA na validação de credenciais"
+        print_separator
+        print_warning "Possíveis causas:"
+        echo "  1. Senha incorreta ou contém caracteres especiais não tratados"
+        echo "  2. Conta bloqueada/desabilitada no Active Directory"
+        echo "  3. Senha expirada no AD"
+        echo "  4. Usuário não existe no domínio"
+        echo ""
+        print_info "Verificações:"
+        echo "  - Confirme que a senha está correta"
+        echo "  - Verifique no AD se a conta está ativa"
+        echo "  - Tente com o usuário Administrator"
+        echo ""
+        tail -n 10 "$LOG_FILE" | grep -i "error\|fail\|denied\|revoked\|locked" | while read -r line; do
+            echo "  LOG: $line"
+        done
+        log_error "Falha na validação de credenciais - abortando ingresso"
+        return 1
+    fi
+    
+    # Limpar ticket Kerberos (não precisamos mais dele)
+    kdestroy >> "$LOG_FILE" 2>&1 || true
+    
+    print_separator
+    
+    # Agora sim, tentar ingresso com net ads join (usando formato validado!)
+    print_info "Ingressando no domínio com 'net ads join'..."
+    log_info "Executando: net ads join -U $user_format"
     
     if command -v expect > /dev/null 2>&1; then
         local expect_script=$(mktemp)
@@ -449,66 +531,111 @@ log_user 1
 spawn net ads join -U $username
 expect {
     "*password*:" { send "$password\r"; exp_continue }
+    "*Password*:" { send "$password\r"; exp_continue }
     "Password for *:" { send "$password\r"; exp_continue }
-    "Joined*to*" { exit 0 }
-    "Failed*" { exit 1 }
-    timeout { exit 1 }
+    "Joined*to realm*" { 
+        puts "\n✓ JOIN SUCESSO"
+        exit 0 
+    }
+    "Joined*to*domain*" { 
+        puts "\n✓ JOIN SUCESSO"
+        exit 0 
+    }
+    "Failed*" { 
+        puts "\n✗ JOIN FALHOU"
+        exit 1 
+    }
+    timeout { 
+        puts "\n✗ TIMEOUT"
+        exit 1 
+    }
     eof
 }
+
+set wait_result [wait]
+set exit_status [lindex $wait_result 3]
+exit $exit_status
 EXPECTEOF
         
-        if expect "$expect_script" "$USERNAME" "$PASSWORD" >> "$LOG_FILE" 2>&1; then
-            rm -f "$temp_pass_file" "$expect_script"
-            print_success "Computador registrado no domínio com sucesso"
+        # Capturar saída completa
+        local join_output=$(mktemp)
+        if expect "$expect_script" "$user_format" "$PASSWORD" > "$join_output" 2>&1; then
+            cat "$join_output" >> "$LOG_FILE"
+            rm -f "$temp_pass_file" "$expect_script" "$join_output"
+            print_success "✓ Computador registrado no domínio com sucesso"
             log_success "Ingresso no domínio realizado com sucesso (net ads join)"
             return 0
         else
-            log_warning "net ads join falhou, tentando método alternativo..."
-            rm -f "$expect_script"
+            cat "$join_output" >> "$LOG_FILE"
+            print_warning "net ads join falhou, tentando realm join..."
+            log_warning "net ads join falhou, saída:"
+            cat "$join_output" >> "$LOG_FILE"
+            rm -f "$expect_script" "$join_output"
         fi
     fi
     
-    # Método alternativo: realm join
-    print_info "Tentando com realm join..."
-    if realm join --user="$USERNAME" "$DOMAIN" --verbose < "$temp_pass_file" >> "$LOG_FILE" 2>&1; then
-        rm -f "$temp_pass_file"
-        print_success "Computador registrado no domínio com sucesso"
+    # Método alternativo: realm join (usando formato validado!)
+    print_info "Tentando com 'realm join'..."
+    log_info "Executando: realm join --user=$user_format $DOMAIN"
+    
+    local realm_output=$(mktemp)
+    if realm join --user="$user_format" "$DOMAIN" --verbose < "$temp_pass_file" > "$realm_output" 2>&1; then
+        cat "$realm_output" >> "$LOG_FILE"
+        rm -f "$temp_pass_file" "$realm_output"
+        print_success "✓ Computador registrado no domínio com sucesso"
         log_success "Ingresso no domínio realizado com sucesso (realm join)"
         return 0
+    else
+        cat "$realm_output" >> "$LOG_FILE"
+        print_error "realm join também falhou"
+        log_error "realm join falhou, saída:"
+        cat "$realm_output" >> "$LOG_FILE"
+        rm -f "$realm_output"
     fi
     
     rm -f "$temp_pass_file"
     
     # Se todos falharam
-    print_error "Falha ao ingressar no domínio"
-    log_error "Falha no ingresso no domínio - todos os métodos falharam"
+    print_error "✗ Falha ao ingressar no domínio"
+    log_error "TODOS OS MÉTODOS FALHARAM (net ads join e realm join)"
+    
+    print_separator
+    print_warning "Diagnóstico completo:"
+    echo ""
+    echo "1. Credenciais foram validadas: ✓ SIM ($user_format)"
+    echo "2. net ads join: ✗ FALHOU"
+    echo "3. realm join: ✗ FALHOU"
+    echo ""
     
     # Verificar se pelo menos o keytab foi criado
-    if [ -f /etc/krb5.keytab ]; then
-        print_warning "Keytab existe, mas join parece ter falhado"
+    if [ -f /etc/krb5.keytab ] && [ -s /etc/krb5.keytab ]; then
+        print_warning "⚠ Keytab existe, mas join reportou falha"
         if klist -k /etc/krb5.keytab >> "$LOG_FILE" 2>&1; then
-            print_info "Keytab contém principals, pode estar OK"
+            print_info "Keytab contém principals - sistema pode estar registrado"
+            log_warning "Keytab existe apesar do erro de join"
             return 0
         fi
     fi
     
-    # Exibir últimas linhas do log para diagnóstico
-    print_warning "Últimas mensagens de erro:"
-    tail -n 15 "$LOG_FILE" | grep -i "error\|fail\|denied\|couldn't" | while read -r line; do
+    # Exibir últimas linhas do log
+    print_warning "Últimas 20 linhas do log:"
+    tail -n 20 "$LOG_FILE" | while read -r line; do
         echo "  $line"
     done
     
-    # Exibir possíveis causas
-    print_warning "Possíveis causas:"
-    echo "  - Usuário não tem permissão para adicionar computadores ao domínio"
-    echo "  - Limite de computadores no domínio atingido"
-    echo "  - Nome do computador já existe no domínio"
-    echo "  - Política de grupo bloqueando o ingresso"
-    echo "  - Versão incompatível do protocolo"
-    
     print_separator
-    print_info "Dica: Tente usar um usuário com privilégios de Domain Admin"
-    print_info "Ou peça ao administrador para criar permissões específicas"
+    print_warning "Possíveis causas (apesar de credenciais válidas):"
+    echo "  1. Usuário '$user_format' não tem permissão para adicionar computadores"
+    echo "  2. Limite de computadores no domínio atingido"
+    echo "  3. Nome do computador já existe no domínio"
+    echo "  4. Política de grupo bloqueando o ingresso"
+    echo "  5. Requisitos de segurança do AD não atendidos"
+    echo ""
+    print_info "Soluções:"
+    echo "  1. Use um usuário com privilégios 'Domain Admin'"
+    echo "  2. Ou delegue permissão específica ao usuário '$user_format'"
+    echo "  3. Verifique se o nome '$(hostname)' já existe no AD"
+    echo "  4. Tente remover o computador manualmente do AD e tentar novamente"
     
     return 1
 }
