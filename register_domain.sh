@@ -756,18 +756,48 @@ restart_domain_services() {
     print_info "Iniciando SSSD..."
     systemctl enable sssd >> "$LOG_FILE" 2>&1
     
-    if systemctl start sssd >> "$LOG_FILE" 2>&1; then
+    if systemctl start sssd 2>&1 | tee -a "$LOG_FILE"; then
         print_success "SSSD iniciado com sucesso"
         log_success "SSSD iniciado"
     else
         print_error "FALHA ao iniciar SSSD"
         log_error "Falha ao iniciar SSSD"
         
-        # Mostrar erro do journalctl
-        print_warning "Erro do SSSD:"
-        journalctl -xeu sssd.service --no-pager -n 20 | tail -10 | while read -r line; do
+        # Mostrar erro REAL do SSSD
+        print_warning "Erro detalhado do SSSD:"
+        
+        # Tentar pegar o erro real do log do SSSD
+        if [ -f /var/log/sssd/sssd.log ]; then
+            echo ""
+            echo "=== Últimas linhas de /var/log/sssd/sssd.log ==="
+            tail -n 20 /var/log/sssd/sssd.log | grep -i "error\|fail\|could not\|unable" || tail -n 10 /var/log/sssd/sssd.log
+        fi
+        
+        # Tentar executar SSSD em modo debug para ver o erro
+        print_separator
+        print_info "Tentando executar SSSD em modo debug..."
+        timeout 5 /usr/sbin/sssd -i -d 3 2>&1 | head -n 30 | while read -r line; do
             echo "  $line"
         done
+        
+        print_separator
+        print_warning "Possíveis problemas:"
+        echo "  1. Arquivo /etc/sssd/sssd.conf tem problema de sintaxe"
+        echo "  2. Permissões incorretas (deve ser 600)"
+        echo "  3. Domínio não está configurado corretamente no realmd"
+        echo "  4. Falta de comunicação com o controlador de domínio"
+        
+        # Verificar permissões do arquivo
+        local perms=$(stat -c "%a" /etc/sssd/sssd.conf 2>/dev/null)
+        if [ "$perms" != "600" ]; then
+            print_warning "PROBLEMA: Permissões do sssd.conf: $perms (deveria ser 600)"
+            chmod 600 /etc/sssd/sssd.conf
+            print_info "Permissões corrigidas, tentando iniciar novamente..."
+            if systemctl start sssd 2>&1 | tee -a "$LOG_FILE"; then
+                print_success "SSSD iniciado após correção de permissões!"
+                return 0
+            fi
+        fi
         
         return 1
     fi
