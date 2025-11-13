@@ -33,10 +33,10 @@ get_required_packages() {
     
     case "$distro" in
         ubuntu|debian)
-            echo "sssd realmd oddjob oddjob-mkhomedir adcli samba-common-bin krb5-user ldap-utils"
+            echo "sssd realmd oddjob oddjob-mkhomedir adcli samba-common-bin krb5-user ldap-utils expect"
             ;;
         rhel|centos|rocky|almalinux)
-            echo "sssd realmd oddjob oddjob-mkhomedir adcli samba-common samba-common-tools krb5-workstation openldap-clients"
+            echo "sssd realmd oddjob oddjob-mkhomedir adcli samba-common samba-common-tools krb5-workstation openldap-clients expect"
             ;;
         *)
             echo ""
@@ -159,15 +159,35 @@ collect_domain_info() {
     if [ -n "$DEFAULT_ADMIN_USER" ]; then
         USERNAME=$(prompt_user "Digite o usuário administrador" "$DEFAULT_ADMIN_USER")
     else
-        USERNAME=$(prompt_user "Digite o usuário administrador do domínio")
+        USERNAME=$(prompt_user "Digite o usuário administrador do domínio (apenas o nome, sem @dominio)")
     fi
     
     validate_not_empty "$USERNAME" "Usuário" || return 1
+    
+    # Normalizar usuário - remover domínio se foi incluído
+    if [[ "$USERNAME" == *"@"* ]]; then
+        print_warning "Detectado '@' no nome de usuário. Extraindo apenas o nome..."
+        # Extrair apenas a parte antes do @
+        USERNAME="${USERNAME%%@*}"
+        print_info "Usando nome de usuário: $USERNAME"
+        log_info "Nome de usuário normalizado: $USERNAME"
+    fi
+    
     log_info "Usuário informado: $USERNAME"
     
     # Senha
     PASSWORD=$(prompt_password "Digite a senha do usuário $USERNAME")
     validate_not_empty "$PASSWORD" "Senha" || return 1
+    
+    # Log do comprimento da senha (sem revelar a senha)
+    local pass_length=${#PASSWORD}
+    log_info "Senha capturada (comprimento: $pass_length caracteres)"
+    
+    # Verificar se senha tem caracteres especiais
+    if [[ "$PASSWORD" =~ [^a-zA-Z0-9] ]]; then
+        print_info "Senha contém caracteres especiais (tratamento especial será aplicado)"
+        log_info "Senha contém caracteres especiais"
+    fi
     
     # Grupo para acesso SSH e Sudo
     if [ -n "$DEFAULT_ADMIN_GROUP" ]; then
@@ -206,8 +226,14 @@ test_kerberos_auth() {
         print_info "Testando formato: $user_format"
         log_info "Tentando kinit com formato: $user_format"
         
-        # Testar autenticação
-        if echo "$password" | kinit "$user_format" >> "$LOG_FILE" 2>&1; then
+        # Método 1: Usar arquivo temporário (mais confiável para senhas com caracteres especiais)
+        local temp_pass=$(mktemp)
+        chmod 600 "$temp_pass"
+        # Usar printf com %s para evitar interpretação de caracteres especiais
+        printf '%s\n' "$password" > "$temp_pass"
+        
+        if kinit "$user_format" < "$temp_pass" >> "$LOG_FILE" 2>&1; then
+            rm -f "$temp_pass"
             print_success "Autenticação Kerberos bem-sucedida com $user_format"
             log_success "Autenticação Kerberos OK: $user_format"
             
@@ -218,6 +244,40 @@ test_kerberos_auth() {
             echo "$user_format"
             return 0
         fi
+        
+        # Método 2: Usar expect (melhor para caracteres especiais)
+        if command -v expect > /dev/null 2>&1; then
+            # Criar script expect temporário para evitar problemas com caracteres especiais
+            local expect_script=$(mktemp)
+            cat > "$expect_script" << 'EXPECTEOF'
+set timeout 30
+set user_format [lindex $argv 0]
+set password [lindex $argv 1]
+spawn kinit $user_format
+expect {
+    "Password for *:" { send "$password\r" }
+    "Password*:" { send "$password\r" }
+    timeout { exit 1 }
+}
+expect eof
+EXPECTEOF
+            
+            if expect "$expect_script" "$user_format" "$password" >> "$LOG_FILE" 2>&1; then
+                rm -f "$temp_pass" "$expect_script"
+                print_success "Autenticação Kerberos bem-sucedida com $user_format"
+                log_success "Autenticação Kerberos OK: $user_format (método expect)"
+                
+                # Limpar ticket
+                kdestroy >> "$LOG_FILE" 2>&1
+                
+                # Retornar o formato que funcionou
+                echo "$user_format"
+                return 0
+            fi
+            rm -f "$expect_script"
+        fi
+        
+        rm -f "$temp_pass"
     done
     
     # Se nenhum formato funcionou
@@ -226,9 +286,49 @@ test_kerberos_auth() {
     
     # Mostrar erro do kinit
     print_warning "Detalhes do erro de autenticação:"
-    tail -n 5 "$LOG_FILE" | grep -i "error\|fail\|incorrect" | while read -r line; do
+    tail -n 10 "$LOG_FILE" | grep -i "error\|fail\|incorrect\|password" | while read -r line; do
         echo "  $line"
     done
+    
+    print_separator
+    print_warning "DIAGNÓSTICO:"
+    echo "  O erro 'Password incorrect' pode significar:"
+    echo "  1. A senha contém caracteres especiais problemáticos"
+    echo "  2. O usuário '$username' não existe no domínio"
+    echo "  3. O usuário está bloqueado/desabilitado"
+    echo "  4. O usuário não tem permissões para autenticar via Kerberos"
+    echo ""
+    
+    # Tentar verificar se o usuário existe via LDAP
+    print_info "Verificando se o usuário existe no Active Directory..."
+    local dc_components=""
+    IFS='.' read -ra ADDR <<< "$domain"
+    for i in "${ADDR[@]}"; do
+        dc_components="${dc_components}DC=$i,"
+    done
+    dc_components="${dc_components%,}"
+    
+    if ldapsearch -x -H ldap://$domain -b "$dc_components" "(sAMAccountName=$username)" sAMAccountName >> "$LOG_FILE" 2>&1; then
+        if grep -q "sAMAccountName: $username" "$LOG_FILE"; then
+            print_success "Usuário '$username' foi encontrado no Active Directory"
+            log_info "Usuário existe no AD"
+            echo ""
+            print_error "O usuário existe, mas não consegue autenticar!"
+            print_warning "Isso geralmente significa:"
+            echo "  • O usuário NÃO TEM PERMISSÃO para adicionar computadores ao domínio"
+            echo "  • Use um usuário com privilégios de Domain Admin"
+        else
+            print_error "Usuário '$username' NÃO foi encontrado no Active Directory"
+            log_error "Usuário não existe no AD"
+        fi
+    fi
+    
+    echo ""
+    print_info "SUGESTÕES:"
+    echo "  • Use o usuário 'Administrator' que tem todas as permissões"
+    echo "  • OU peça ao administrador do domínio para:"
+    echo "    - Adicionar o usuário '$username' ao grupo Domain Admins"
+    echo "    - Dar permissão explícita para adicionar computadores ao domínio"
     
     return 1
 }
@@ -259,71 +359,155 @@ join_domain() {
     working_user_format=$(test_kerberos_auth "$DOMAIN" "$USERNAME" "$PASSWORD")
     
     if [ $? -ne 0 ]; then
-        print_error "As credenciais fornecidas não são válidas"
-        print_warning "Possíveis problemas:"
-        echo "  - Senha incorreta"
-        echo "  - Usuário '$USERNAME' não existe no domínio"
-        echo "  - Usuário está bloqueado ou desabilitado"
-        echo "  - Política de senha/autenticação bloqueando"
-        log_error "Falha no teste de autenticação Kerberos"
-        return 1
+        print_error "O teste de autenticação Kerberos falhou"
+        print_separator
+        
+        # Perguntar se quer tentar mesmo assim
+        print_warning "OPÇÕES:"
+        echo "  1. Abortar e verificar as credenciais"
+        echo "  2. Tentar continuar mesmo assim (pode funcionar com alguns ADs)"
+        echo ""
+        
+        if prompt_confirm "Deseja tentar continuar mesmo assim? (NÃO RECOMENDADO)"; then
+            print_warning "Continuando sem validação Kerberos..."
+            log_warning "Usuário optou por continuar sem validação Kerberos"
+        else
+            print_info "Operação abortada. Verifique:"
+            echo "  • Use o usuário 'Administrator' em vez de '$USERNAME'"
+            echo "  • Confirme que o usuário tem privilégios de Domain Admin"
+            echo "  • Teste a senha fazendo login em uma máquina Windows"
+            log_info "Operação abortada pelo usuário após falha Kerberos"
+            return 1
+        fi
     fi
     
     print_separator
     
     # Passar senha via stdin de forma mais robusta
-    print_info "Tentando ingressar no domínio com usuário validado..."
+    print_info "Tentando ingressar no domínio..."
     log_info "Usando formato de usuário: $USERNAME"
     
-    # Método 1: Tentar com echo e pipe (mais compatível)
-    if echo -n "$PASSWORD" | realm join --user="$USERNAME" "$DOMAIN" --verbose >> "$LOG_FILE" 2>&1; then
-        print_success "Computador registrado no domínio com sucesso"
-        log_success "Ingresso no domínio realizado com sucesso"
-        return 0
-    fi
-    
-    # Método 2: Se falhar, tentar com printf (evita problemas com echo)
-    log_warning "Primeira tentativa falhou, tentando método alternativo..."
-    print_info "Tentando método alternativo..."
-    
-    if printf "%s" "$PASSWORD" | realm join --user="$USERNAME" "$DOMAIN" --verbose >> "$LOG_FILE" 2>&1; then
-        print_success "Computador registrado no domínio com sucesso"
-        log_success "Ingresso no domínio realizado com sucesso (método alternativo)"
-        return 0
-    fi
-    
-    # Método 3: Tentar com opção --one-time-password via arquivo temporário
-    log_warning "Segunda tentativa falhou, tentando com arquivo temporário..."
-    print_info "Tentando terceiro método..."
-    
+    # Criar arquivo temporário para senha (mais seguro e confiável para caracteres especiais)
     local temp_pass_file=$(mktemp)
-    echo "$PASSWORD" > "$temp_pass_file"
     chmod 600 "$temp_pass_file"
+    # Usar printf com aspas simples para evitar interpretação de caracteres especiais
+    printf '%s\n' "$PASSWORD" > "$temp_pass_file"
     
-    if cat "$temp_pass_file" | realm join --user="$USERNAME" "$DOMAIN" --verbose >> "$LOG_FILE" 2>&1; then
+    log_info "Arquivo temporário criado para senha"
+    log_info "Tamanho do arquivo: $(wc -c < "$temp_pass_file") bytes"
+    
+    # Método 1: realm join com arquivo temporário
+    print_info "Método 1: realm join com arquivo..."
+    log_info "Executando: realm join --user=$USERNAME $DOMAIN --verbose"
+    
+    if realm join --user="$USERNAME" "$DOMAIN" --verbose < "$temp_pass_file" >> "$LOG_FILE" 2>&1; then
         rm -f "$temp_pass_file"
         print_success "Computador registrado no domínio com sucesso"
-        log_success "Ingresso no domínio realizado com sucesso (método arquivo)"
+        log_success "Ingresso no domínio realizado com sucesso (método 1)"
         return 0
+    else
+        local exit_code=$?
+        log_error "Método 1 falhou com código: $exit_code"
     fi
     
-    rm -f "$temp_pass_file"
+    # Método 2: adcli com stdin (geralmente funciona melhor com caracteres especiais)
+    log_warning "Tentando método 2..."
+    print_info "Método 2: adcli com arquivo..."
+    log_info "Executando: adcli join --domain=$DOMAIN --login-user=$USERNAME --stdin-password"
     
-    # Método 4: Tentar usar adcli diretamente (às vezes funciona melhor)
-    log_warning "Tentando método direto com adcli..."
-    print_info "Tentando quarto método (adcli)..."
-    
-    local realm=$(echo "$DOMAIN" | tr '[:lower:]' '[:upper:]')
-    
-    if echo "$PASSWORD" | adcli join --domain="$DOMAIN" --login-user="$USERNAME" --stdin-password -v >> "$LOG_FILE" 2>&1; then
+    if adcli join --domain="$DOMAIN" --login-user="$USERNAME" --stdin-password -v < "$temp_pass_file" >> "$LOG_FILE" 2>&1; then
+        rm -f "$temp_pass_file"
         print_success "Computador registrado no domínio com sucesso"
-        log_success "Ingresso no domínio realizado com sucesso (adcli)"
+        log_success "Ingresso no domínio realizado com sucesso (método 2 - adcli)"
         
         # Configurar realm após adcli
         realm list >> "$LOG_FILE" 2>&1
-        
         return 0
+    else
+        log_error "Método 2 falhou com código: $?"
     fi
+    
+    # Método 3: expect com realm join (melhor para caracteres especiais complexos)
+    if command -v expect > /dev/null 2>&1; then
+        log_warning "Tentando método 3 com expect..."
+        print_info "Método 3: realm join com expect..."
+        
+        # Criar script expect para evitar problemas com caracteres especiais
+        local expect_script=$(mktemp)
+        cat > "$expect_script" << 'EXPECTEOF'
+set timeout 120
+set username [lindex $argv 0]
+set domain [lindex $argv 1]
+set password [lindex $argv 2]
+
+spawn realm join --user=$username $domain --verbose
+expect {
+    "Password for *:" { send "$password\r" }
+    "Password*:" { send "$password\r" }
+    timeout { 
+        puts "Timeout esperando prompt de senha"
+        exit 1 
+    }
+}
+expect {
+    eof { exit 0 }
+    timeout { exit 1 }
+}
+EXPECTEOF
+        
+        if expect "$expect_script" "$USERNAME" "$DOMAIN" "$PASSWORD" >> "$LOG_FILE" 2>&1; then
+            rm -f "$temp_pass_file" "$expect_script"
+            print_success "Computador registrado no domínio com sucesso"
+            log_success "Ingresso no domínio realizado com sucesso (método 3 - expect realm)"
+            return 0
+        else
+            log_error "Método 3 falhou com código: $?"
+        fi
+        rm -f "$expect_script"
+    fi
+    
+    # Método 4: expect com adcli
+    if command -v expect > /dev/null 2>&1; then
+        log_warning "Tentando método 4 com expect e adcli..."
+        print_info "Método 4: adcli com expect..."
+        
+        local expect_script_adcli=$(mktemp)
+        cat > "$expect_script_adcli" << 'EXPECTEOF'
+set timeout 120
+set username [lindex $argv 0]
+set domain [lindex $argv 1]
+set password [lindex $argv 2]
+
+spawn adcli join --domain=$domain --login-user=$username -v
+expect {
+    "Password for *:" { send "$password\r" }
+    "Password*:" { send "$password\r" }
+    timeout { 
+        puts "Timeout esperando prompt de senha"
+        exit 1 
+    }
+}
+expect {
+    eof { exit 0 }
+    timeout { exit 1 }
+}
+EXPECTEOF
+        
+        if expect "$expect_script_adcli" "$USERNAME" "$DOMAIN" "$PASSWORD" >> "$LOG_FILE" 2>&1; then
+            rm -f "$temp_pass_file" "$expect_script_adcli"
+            print_success "Computador registrado no domínio com sucesso"
+            log_success "Ingresso no domínio realizado com sucesso (método 4 - expect adcli)"
+            
+            # Configurar realm após adcli
+            realm list >> "$LOG_FILE" 2>&1
+            return 0
+        else
+            log_error "Método 4 falhou com código: $?"
+        fi
+        rm -f "$expect_script_adcli"
+    fi
+    
+    rm -f "$temp_pass_file"
     
     # Se todos falharam
     print_error "Falha ao ingressar no domínio"
