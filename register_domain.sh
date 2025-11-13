@@ -354,157 +354,94 @@ join_domain() {
     
     print_separator
     
-    # Testar autenticação Kerberos antes de tentar ingressar
-    local working_user_format
-    working_user_format=$(test_kerberos_auth "$DOMAIN" "$USERNAME" "$PASSWORD")
-    
-    if [ $? -ne 0 ]; then
-        print_error "O teste de autenticação Kerberos falhou"
-        print_separator
-        
-        # Perguntar se quer tentar mesmo assim
-        print_warning "OPÇÕES:"
-        echo "  1. Abortar e verificar as credenciais"
-        echo "  2. Tentar continuar mesmo assim (pode funcionar com alguns ADs)"
-        echo ""
-        
-        if prompt_confirm "Deseja tentar continuar mesmo assim? (NÃO RECOMENDADO)"; then
-            print_warning "Continuando sem validação Kerberos..."
-            log_warning "Usuário optou por continuar sem validação Kerberos"
-        else
-            print_info "Operação abortada. Verifique:"
-            echo "  • Use o usuário 'Administrator' em vez de '$USERNAME'"
-            echo "  • Confirme que o usuário tem privilégios de Domain Admin"
-            echo "  • Teste a senha fazendo login em uma máquina Windows"
-            log_info "Operação abortada pelo usuário após falha Kerberos"
-            return 1
-        fi
-    fi
+    # SKIP Kerberos test - causa múltiplas tentativas e pode bloquear conta no AD
+    print_info "Pulando teste Kerberos (evita bloqueio de conta no AD)"
+    log_info "Teste Kerberos desabilitado para evitar múltiplas tentativas"
     
     print_separator
     
-    # Passar senha via stdin de forma mais robusta
-    print_info "Tentando ingressar no domínio..."
-    log_info "Usando formato de usuário: $USERNAME"
+    # Instalar Samba se necessário (para net ads join)
+    if ! command -v net > /dev/null 2>&1; then
+        print_info "Instalando Samba para método net ads..."
+        install_packages samba smbclient winbind
+    fi
     
-    # Criar arquivo temporário para senha (mais seguro e confiável para caracteres especiais)
+    # Truncar hostname para limite NetBIOS (15 caracteres)
+    local HOSTNAME_SHORT=$(hostname | cut -c1-15 | tr '[:lower:]' '[:upper:]')
+    print_info "Nome NetBIOS: $HOSTNAME_SHORT (máx 15 caracteres)"
+    log_info "Nome NetBIOS truncado: $HOSTNAME_SHORT"
+    
+    # Configurar Samba
+    print_info "Configurando Samba..."
+    cat > /etc/samba/smb.conf << EOFSMB
+[global]
+   netbios name = $HOSTNAME_SHORT
+   workgroup = ${DOMAIN%%.*}
+   security = ads
+   realm = ${DOMAIN^^}
+   encrypt passwords = yes
+   kerberos method = secrets and keytab
+   
+   idmap config * : backend = tdb
+   idmap config * : range = 3000-7999
+   idmap config ${DOMAIN%%.*} : backend = rid
+   idmap config ${DOMAIN%%.*} : range = 10000-999999
+   
+   template shell = /bin/bash
+   template homedir = /home/%U
+   winbind use default domain = true
+   winbind offline logon = false
+EOFSMB
+    
+    print_success "Samba configurado"
+    log_success "Configuração Samba criada"
+    
+    # Criar arquivo temporário para senha
     local temp_pass_file=$(mktemp)
     chmod 600 "$temp_pass_file"
-    # Usar printf com aspas simples para evitar interpretação de caracteres especiais
     printf '%s\n' "$PASSWORD" > "$temp_pass_file"
     
-    log_info "Arquivo temporário criado para senha"
-    log_info "Tamanho do arquivo: $(wc -c < "$temp_pass_file") bytes"
+    # Método PREFERENCIAL: net ads join com expect (UMA tentativa)
+    print_info "Tentando ingressar no domínio com net ads join..."
+    log_info "Executando: net ads join -U $USERNAME"
     
-    # Método 1: realm join com arquivo temporário
-    print_info "Método 1: realm join com arquivo..."
-    log_info "Executando: realm join --user=$USERNAME $DOMAIN --verbose"
-    
-    if realm join --user="$USERNAME" "$DOMAIN" --verbose < "$temp_pass_file" >> "$LOG_FILE" 2>&1; then
-        rm -f "$temp_pass_file"
-        print_success "Computador registrado no domínio com sucesso"
-        log_success "Ingresso no domínio realizado com sucesso (método 1)"
-        return 0
-    else
-        local exit_code=$?
-        log_error "Método 1 falhou com código: $exit_code"
-    fi
-    
-    # Método 2: adcli com stdin (geralmente funciona melhor com caracteres especiais)
-    log_warning "Tentando método 2..."
-    print_info "Método 2: adcli com arquivo..."
-    log_info "Executando: adcli join --domain=$DOMAIN --login-user=$USERNAME --stdin-password"
-    
-    if adcli join --domain="$DOMAIN" --login-user="$USERNAME" --stdin-password -v < "$temp_pass_file" >> "$LOG_FILE" 2>&1; then
-        rm -f "$temp_pass_file"
-        print_success "Computador registrado no domínio com sucesso"
-        log_success "Ingresso no domínio realizado com sucesso (método 2 - adcli)"
-        
-        # Configurar realm após adcli
-        realm list >> "$LOG_FILE" 2>&1
-        return 0
-    else
-        log_error "Método 2 falhou com código: $?"
-    fi
-    
-    # Método 3: expect com realm join (melhor para caracteres especiais complexos)
     if command -v expect > /dev/null 2>&1; then
-        log_warning "Tentando método 3 com expect..."
-        print_info "Método 3: realm join com expect..."
-        
-        # Criar script expect para evitar problemas com caracteres especiais
         local expect_script=$(mktemp)
         cat > "$expect_script" << 'EXPECTEOF'
 set timeout 120
 set username [lindex $argv 0]
-set domain [lindex $argv 1]
-set password [lindex $argv 2]
+set password [lindex $argv 1]
+log_user 1
 
-spawn realm join --user=$username $domain --verbose
+spawn net ads join -U $username
 expect {
-    "Password for *:" { send "$password\r" }
-    "Password*:" { send "$password\r" }
-    timeout { 
-        puts "Timeout esperando prompt de senha"
-        exit 1 
-    }
-}
-expect {
-    eof { exit 0 }
+    "*password*:" { send "$password\r"; exp_continue }
+    "Password for *:" { send "$password\r"; exp_continue }
+    "Joined*to*" { exit 0 }
+    "Failed*" { exit 1 }
     timeout { exit 1 }
+    eof
 }
 EXPECTEOF
         
-        if expect "$expect_script" "$USERNAME" "$DOMAIN" "$PASSWORD" >> "$LOG_FILE" 2>&1; then
+        if expect "$expect_script" "$USERNAME" "$PASSWORD" >> "$LOG_FILE" 2>&1; then
             rm -f "$temp_pass_file" "$expect_script"
             print_success "Computador registrado no domínio com sucesso"
-            log_success "Ingresso no domínio realizado com sucesso (método 3 - expect realm)"
+            log_success "Ingresso no domínio realizado com sucesso (net ads join)"
             return 0
         else
-            log_error "Método 3 falhou com código: $?"
+            log_warning "net ads join falhou, tentando método alternativo..."
+            rm -f "$expect_script"
         fi
-        rm -f "$expect_script"
     fi
     
-    # Método 4: expect com adcli
-    if command -v expect > /dev/null 2>&1; then
-        log_warning "Tentando método 4 com expect e adcli..."
-        print_info "Método 4: adcli com expect..."
-        
-        local expect_script_adcli=$(mktemp)
-        cat > "$expect_script_adcli" << 'EXPECTEOF'
-set timeout 120
-set username [lindex $argv 0]
-set domain [lindex $argv 1]
-set password [lindex $argv 2]
-
-spawn adcli join --domain=$domain --login-user=$username -v
-expect {
-    "Password for *:" { send "$password\r" }
-    "Password*:" { send "$password\r" }
-    timeout { 
-        puts "Timeout esperando prompt de senha"
-        exit 1 
-    }
-}
-expect {
-    eof { exit 0 }
-    timeout { exit 1 }
-}
-EXPECTEOF
-        
-        if expect "$expect_script_adcli" "$USERNAME" "$DOMAIN" "$PASSWORD" >> "$LOG_FILE" 2>&1; then
-            rm -f "$temp_pass_file" "$expect_script_adcli"
-            print_success "Computador registrado no domínio com sucesso"
-            log_success "Ingresso no domínio realizado com sucesso (método 4 - expect adcli)"
-            
-            # Configurar realm após adcli
-            realm list >> "$LOG_FILE" 2>&1
-            return 0
-        else
-            log_error "Método 4 falhou com código: $?"
-        fi
-        rm -f "$expect_script_adcli"
+    # Método alternativo: realm join
+    print_info "Tentando com realm join..."
+    if realm join --user="$USERNAME" "$DOMAIN" --verbose < "$temp_pass_file" >> "$LOG_FILE" 2>&1; then
+        rm -f "$temp_pass_file"
+        print_success "Computador registrado no domínio com sucesso"
+        log_success "Ingresso no domínio realizado com sucesso (realm join)"
+        return 0
     fi
     
     rm -f "$temp_pass_file"
@@ -822,6 +759,13 @@ restart_domain_services() {
         return 1
     fi
     
+    # Habilitar winbind se existir
+    if systemctl list-unit-files | grep -q "winbind"; then
+        print_info "Habilitando winbind..."
+        systemctl enable winbind >> "$LOG_FILE" 2>&1 || true
+        systemctl restart winbind >> "$LOG_FILE" 2>&1 || true
+    fi
+    
     # Habilitar oddjobd
     if systemctl list-unit-files | grep -q "oddjobd"; then
         print_info "Configurando oddjobd..."
@@ -1031,81 +975,15 @@ main() {
     print_separator
     print_info "Verificando keytab do Kerberos..."
     
-    if [ ! -f /etc/krb5.keytab ]; then
-        print_warning "Arquivo /etc/krb5.keytab não foi criado!"
-        print_info "Tentando criar keytab..."
-        
-        local temp_pass_keytab=$(mktemp)
-        chmod 600 "$temp_pass_keytab"
-        printf '%s\n' "$PASSWORD" > "$temp_pass_keytab"
-        
-        # Método 1: Tentar com adcli update (se já está no domínio)
-        print_info "Método 1: adcli update..."
-        if adcli update --domain="$DOMAIN" --login-user="$USERNAME" --stdin-password -v < "$temp_pass_keytab" >> "$LOG_FILE" 2>&1; then
-            print_success "Keytab criado com adcli update"
-            log_success "Keytab criado via adcli update"
-            rm -f "$temp_pass_keytab"
-        # Método 2: Tentar com net ads join
-        elif command -v net > /dev/null 2>&1; then
-            print_info "Método 2: net ads join..."
-            if echo "$PASSWORD" | net ads join -U "$USERNAME" >> "$LOG_FILE" 2>&1; then
-                print_success "Keytab criado com net ads"
-                log_success "Keytab criado via net ads"
-                rm -f "$temp_pass_keytab"
-            else
-                print_error "FALHA ao criar keytab com todos os métodos"
-                print_warning "Tentando método manual com expect..."
-                
-                # Método 3: Usar expect com net ads
-                if command -v expect > /dev/null 2>&1; then
-                    local expect_net=$(mktemp)
-                    cat > "$expect_net" << 'EXPECTEOF'
-set timeout 60
-set username [lindex $argv 0]
-set password [lindex $argv 1]
-spawn net ads join -U $username
-expect {
-    "*password*:" { send "$password\r" }
-    "Password*:" { send "$password\r" }
-    timeout { exit 1 }
-}
-expect eof
-EXPECTEOF
-                    if expect "$expect_net" "$USERNAME" "$PASSWORD" >> "$LOG_FILE" 2>&1; then
-                        print_success "Keytab criado com net ads (expect)"
-                        log_success "Keytab criado via net ads + expect"
-                        rm -f "$temp_pass_keytab" "$expect_net"
-                    else
-                        rm -f "$temp_pass_keytab" "$expect_net"
-                        print_error "FALHA: Não foi possível criar keytab"
-                        print_error "SSSD não funcionará sem o keytab"
-                        print_separator
-                        print_warning "Correção manual necessária:"
-                        echo "  sudo net ads join -U $USERNAME"
-                        echo "  OU"
-                        echo "  sudo adcli update --domain=$DOMAIN --login-user=$USERNAME"
-                        exit 1
-                    fi
-                    rm -f "$expect_net"
-                else
-                    rm -f "$temp_pass_keytab"
-                    print_error "FALHA: Não foi possível criar keytab"
-                    print_error "SSSD não funcionará sem o keytab"
-                    print_separator
-                    print_warning "Execute manualmente:"
-                    echo "  sudo ./fix_keytab.sh"
-                    exit 1
-                fi
-            fi
-        else
-            rm -f "$temp_pass_keytab"
-            print_error "FALHA ao criar keytab"
-            print_error "SSSD não funcionará sem o keytab"
-            print_separator
-            print_warning "Execute manualmente:"
-            echo "  sudo ./fix_keytab.sh"
-            exit 1
-        fi
+    if [ ! -f /etc/krb5.keytab ] || [ ! -s /etc/krb5.keytab ]; then
+        print_error "Arquivo /etc/krb5.keytab não foi criado ou está vazio!"
+        print_error "SSSD não funcionará sem o keytab"
+        print_separator
+        print_warning "Correção manual:"
+        echo "  Execute: sudo ./fix_keytab.sh"
+        echo "  OU: sudo net ads join -U $USERNAME"
+        log_error "Keytab não foi criado"
+        exit 1
     else
         print_success "Keytab existe: /etc/krb5.keytab"
         
