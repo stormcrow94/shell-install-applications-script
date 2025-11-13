@@ -429,152 +429,224 @@ EOFSMB
     print_success "Samba configurado"
     log_success "Configuração Samba criada"
     
+    # IMPORTANTE: NÃO fazemos pré-validação com kinit para evitar bloqueio de conta no AD
+    # Vamos direto para o join com UMA tentativa única
+    
+    print_separator
+    print_info "Iniciando ingresso no domínio (tentativa única)..."
+    log_info "NOTA: Não fazemos pré-teste para evitar bloqueio de conta no AD"
+    
     # Criar arquivo temporário para senha
     local temp_pass_file=$(mktemp)
     chmod 600 "$temp_pass_file"
     printf '%s\n' "$PASSWORD" > "$temp_pass_file"
     
-    print_separator
-    print_info "Validando credenciais antes do ingresso..."
-    log_info "Testando autenticação Kerberos (kinit)"
+    # Usar formato simples do username (net ads join geralmente aceita username simples)
+    local user_format="$USERNAME"
     
-    # Testar credenciais com kinit PRIMEIRO (evita múltiplas tentativas)
-    local auth_success=false
-    local user_format=""
-    
-    # Tentar diferentes formatos de usuário
-    for format in "$USERNAME" "$USERNAME@$DOMAIN" "$USERNAME@${DOMAIN^^}"; do
-        print_info "Testando formato: $format"
-        log_info "Tentando kinit com formato: $format"
-        
-        if command -v expect > /dev/null 2>&1; then
-            local expect_kinit=$(mktemp)
-            cat > "$expect_kinit" << 'EXPECTKINIT'
-set timeout 30
-set username [lindex $argv 0]
-set password [lindex $argv 1]
-log_user 0
-
-spawn kinit $username
-expect {
-    "*Password*:" { send "$password\r"; exp_continue }
-    "*password*:" { send "$password\r"; exp_continue }
-    "Password for *:" { send "$password\r"; exp_continue }
-    eof
-}
-
-set wait_result [wait]
-set exit_status [lindex $wait_result 3]
-exit $exit_status
-EXPECTKINIT
-            
-            if expect "$expect_kinit" "$format" "$PASSWORD" >> "$LOG_FILE" 2>&1; then
-                auth_success=true
-                user_format="$format"
-                rm -f "$expect_kinit"
-                print_success "✓ Credenciais validadas com formato: $format"
-                log_success "Autenticação Kerberos OK com formato: $format"
-                break
-            fi
-            rm -f "$expect_kinit"
-        else
-            # Sem expect, tentar com printf
-            if printf '%s\n' "$PASSWORD" | kinit "$format" >> "$LOG_FILE" 2>&1; then
-                auth_success=true
-                user_format="$format"
-                print_success "✓ Credenciais validadas com formato: $format"
-                log_success "Autenticação Kerberos OK com formato: $format"
-                break
-            fi
-        fi
-    done
-    
-    if [ "$auth_success" = false ]; then
-        rm -f "$temp_pass_file"
-        print_error "✗ FALHA na validação de credenciais"
-        print_separator
-        print_warning "Possíveis causas:"
-        echo "  1. Senha incorreta ou contém caracteres especiais não tratados"
-        echo "  2. Conta bloqueada/desabilitada no Active Directory"
-        echo "  3. Senha expirada no AD"
-        echo "  4. Usuário não existe no domínio"
-        echo ""
-        print_info "Verificações:"
-        echo "  - Confirme que a senha está correta"
-        echo "  - Verifique no AD se a conta está ativa"
-        echo "  - Tente com o usuário Administrator"
-        echo ""
-        tail -n 10 "$LOG_FILE" | grep -i "error\|fail\|denied\|revoked\|locked" | while read -r line; do
-            echo "  LOG: $line"
-        done
-        log_error "Falha na validação de credenciais - abortando ingresso"
-        return 1
-    fi
-    
-    # Limpar ticket Kerberos (não precisamos mais dele)
-    kdestroy >> "$LOG_FILE" 2>&1 || true
-    
-    print_separator
-    
-    # Agora sim, tentar ingresso com net ads join (usando formato validado!)
+    # Tentar ingresso com net ads join
     print_info "Ingressando no domínio com 'net ads join'..."
-    log_info "Executando: net ads join -U $user_format"
+    log_info "Executando: net ads join -U $user_format -S $DOMAIN"
     
     if command -v expect > /dev/null 2>&1; then
+        # Criar arquivo temporário para senha (mais seguro que passar como argumento)
+        local password_file=$(mktemp)
+        chmod 600 "$password_file"
+        printf '%s' "$PASSWORD" > "$password_file"
+        
         local expect_script=$(mktemp)
         cat > "$expect_script" << 'EXPECTEOF'
-set timeout 120
+set timeout 180
 set username [lindex $argv 0]
-set password [lindex $argv 1]
-log_user 1
+set password_file [lindex $argv 1]
+set domain [lindex $argv 2]
 
-spawn net ads join -U $username
+# Ler senha do arquivo (evita problemas com caracteres especiais)
+set fp [open $password_file r]
+set password [read $fp]
+close $fp
+
+# Habilitar log detalhado
+log_user 1
+exp_internal 0
+
+puts "════════════════════════════════════════════"
+puts " TENTATIVA DE INGRESSO NO DOMÍNIO"
+puts "════════════════════════════════════════════"
+puts "Usuário: $username"
+puts "Domínio: $domain"
+puts ""
+
+spawn net ads join -U $username -S $domain -d 3
 expect {
-    "*password*:" { send "$password\r"; exp_continue }
-    "*Password*:" { send "$password\r"; exp_continue }
-    "Password for *:" { send "$password\r"; exp_continue }
+    "*password*:" { 
+        puts " → Enviando senha..."
+        send -- "$password"
+        send "\r"
+        exp_continue 
+    }
+    "*Password*:" { 
+        puts " → Enviando senha..."
+        send -- "$password"
+        send "\r"
+        exp_continue 
+    }
+    "Password for *:" { 
+        puts " → Enviando senha..."
+        send -- "$password"
+        send "\r"
+        exp_continue 
+    }
     "Joined*to realm*" { 
-        puts "\n✓ JOIN SUCESSO"
+        puts "\n════════════════════════════════════════════"
+        puts " ✓ SUCESSO: Ingressado no realm"
+        puts "════════════════════════════════════════════"
         exit 0 
     }
     "Joined*to*domain*" { 
-        puts "\n✓ JOIN SUCESSO"
+        puts "\n════════════════════════════════════════════"
+        puts " ✓ SUCESSO: Ingressado no domínio"
+        puts "════════════════════════════════════════════"
         exit 0 
     }
-    "Failed*" { 
-        puts "\n✗ JOIN FALHOU"
+    "Using short domain name*" {
+        puts " → Processando ingresso..."
+        exp_continue
+    }
+    "*failed*" { 
+        puts "\n════════════════════════════════════════════"
+        puts " ✗ FALHA no ingresso"
+        puts "════════════════════════════════════════════"
         exit 1 
     }
-    timeout { 
-        puts "\n✗ TIMEOUT"
+    "*Failed*" { 
+        puts "\n════════════════════════════════════════════"
+        puts " ✗ FALHA no ingresso"
+        puts "════════════════════════════════════════════"
         exit 1 
+    }
+    "*denied*" {
+        puts "\n════════════════════════════════════════════"
+        puts " ✗ ACESSO NEGADO"
+        puts "════════════════════════════════════════════"
+        exit 1
+    }
+    "*revoked*" {
+        puts "\n════════════════════════════════════════════"
+        puts " ✗ CREDENCIAIS REVOGADAS (conta bloqueada)"
+        puts "════════════════════════════════════════════"
+        exit 2
+    }
+    timeout { 
+        puts "\n════════════════════════════════════════════"
+        puts " ✗ TIMEOUT (sem resposta do servidor)"
+        puts "════════════════════════════════════════════"
+        exit 3 
     }
     eof
 }
 
+# Capturar código de saída do processo spawned
 set wait_result [wait]
-set exit_status [lindex $wait_result 3]
+
+# Expect's wait returns: {pid spawn_id os_error status}
+# - If os_error == 0: normal exit, status is exit code
+# - If os_error == -1: killed by signal, status is signal number
+if {[llength $wait_result] == 4} {
+    set os_error [lindex $wait_result 2]
+    set status [lindex $wait_result 3]
+    
+    if {$os_error == 0} {
+        # Normal exit - use the exit code
+        set exit_status $status
+    } elseif {$os_error == -1} {
+        # Killed by signal
+        puts "\n⚠️  Processo terminado por sinal: $status"
+        set exit_status 1
+    } else {
+        # OS error occurred
+        puts "\n⚠️  Erro do sistema: $os_error"
+        set exit_status 1
+    }
+} else {
+    # Unexpected wait result format
+    puts "\n⚠️  Formato inesperado do wait: $wait_result"
+    set exit_status 1
+}
+
+puts "\nCódigo de saída: $exit_status"
 exit $exit_status
 EXPECTEOF
         
         # Capturar saída completa
         local join_output=$(mktemp)
-        if expect "$expect_script" "$user_format" "$PASSWORD" > "$join_output" 2>&1; then
-            cat "$join_output" >> "$LOG_FILE"
+        local exit_code=0
+        
+        expect "$expect_script" "$user_format" "$password_file" "$DOMAIN" > "$join_output" 2>&1 || exit_code=$?
+        
+        # Limpar arquivo de senha imediatamente
+        rm -f "$password_file"
+        
+        # Sempre salvar no log
+        cat "$join_output" >> "$LOG_FILE"
+        
+        # Exibir saída no terminal
+        cat "$join_output"
+        
+        if [ $exit_code -eq 0 ]; then
             rm -f "$temp_pass_file" "$expect_script" "$join_output"
             print_success "✓ Computador registrado no domínio com sucesso"
             log_success "Ingresso no domínio realizado com sucesso (net ads join)"
             return 0
+        elif [ $exit_code -eq 2 ]; then
+            rm -f "$temp_pass_file" "$expect_script" "$join_output"
+            print_error "✗ CONTA BLOQUEADA no Active Directory"
+            print_separator
+            print_warning "SOLUÇÃO:"
+            echo "  1. Acesse o Active Directory"
+            echo "  2. Desbloqueie a conta '$USERNAME'"
+            echo "  3. OU use o usuário 'Administrator'"
+            echo ""
+            print_info "A conta foi bloqueada por múltiplas tentativas de autenticação"
+            log_error "Conta bloqueada no AD (exit code 2)"
+            return 1
+        elif [ $exit_code -eq 3 ]; then
+            rm -f "$temp_pass_file" "$expect_script" "$join_output"
+            print_error "✗ TIMEOUT - Servidor não respondeu"
+            print_separator
+            print_warning "Verifique:"
+            echo "  1. Conectividade de rede com o controlador de domínio"
+            echo "  2. Firewall não está bloqueando as portas"
+            echo "  3. DNS está resolvendo corretamente"
+            log_error "Timeout no join (exit code 3)"
+            return 1
+        else
+            print_warning "net ads join falhou (código: $exit_code), tentando realm join..."
+            log_warning "net ads join falhou com código $exit_code"
+            rm -f "$expect_script" "$join_output"
+        fi
+    else
+        print_warning "Expect não está instalado - usando modo stdin"
+        log_warning "Expect indisponível - net ads join via stdin"
+        
+        local join_output=$(mktemp)
+        if printf '%s\n' "$PASSWORD" | net ads join -U "$user_format" --stdinpass -S "$DOMAIN" -d 3 > "$join_output" 2>&1; then
+            cat "$join_output" >> "$LOG_FILE"
+            cat "$join_output"
+            rm -f "$temp_pass_file" "$join_output"
+            print_success "✓ Computador registrado no domínio com sucesso"
+            log_success "Ingresso no domínio realizado com sucesso (net ads join via stdin)"
+            return 0
         else
             cat "$join_output" >> "$LOG_FILE"
-            print_warning "net ads join falhou, tentando realm join..."
-            log_warning "net ads join falhou, saída:"
-            cat "$join_output" >> "$LOG_FILE"
-            rm -f "$expect_script" "$join_output"
+            cat "$join_output"
+            print_warning "net ads join (stdin) falhou, tentando realm join..."
+            log_warning "net ads join via stdin falhou"
+            rm -f "$join_output"
         fi
     fi
     
-    # Método alternativo: realm join (usando formato validado!)
+    # Método alternativo: realm join
     print_info "Tentando com 'realm join'..."
     log_info "Executando: realm join --user=$user_format $DOMAIN"
     
@@ -600,42 +672,77 @@ EXPECTEOF
     log_error "TODOS OS MÉTODOS FALHARAM (net ads join e realm join)"
     
     print_separator
-    print_warning "Diagnóstico completo:"
-    echo ""
-    echo "1. Credenciais foram validadas: ✓ SIM ($user_format)"
-    echo "2. net ads join: ✗ FALHOU"
-    echo "3. realm join: ✗ FALHOU"
+    print_warning "════════════════════════════════════════════"
+    print_warning " DIAGNÓSTICO COMPLETO"
+    print_warning "════════════════════════════════════════════"
     echo ""
     
     # Verificar se pelo menos o keytab foi criado
     if [ -f /etc/krb5.keytab ] && [ -s /etc/krb5.keytab ]; then
         print_warning "⚠ Keytab existe, mas join reportou falha"
         if klist -k /etc/krb5.keytab >> "$LOG_FILE" 2>&1; then
-            print_info "Keytab contém principals - sistema pode estar registrado"
+            print_success "✓ Keytab contém principals - sistema pode estar registrado"
             log_warning "Keytab existe apesar do erro de join"
+            echo ""
+            print_info "Execute para verificar:"
+            echo "  realm list"
+            echo "  wbinfo -u"
             return 0
         fi
     fi
     
-    # Exibir últimas linhas do log
-    print_warning "Últimas 20 linhas do log:"
-    tail -n 20 "$LOG_FILE" | while read -r line; do
-        echo "  $line"
-    done
-    
-    print_separator
-    print_warning "Possíveis causas (apesar de credenciais válidas):"
-    echo "  1. Usuário '$user_format' não tem permissão para adicionar computadores"
-    echo "  2. Limite de computadores no domínio atingido"
-    echo "  3. Nome do computador já existe no domínio"
-    echo "  4. Política de grupo bloqueando o ingresso"
-    echo "  5. Requisitos de segurança do AD não atendidos"
+    echo "Status dos métodos tentados:"
+    echo "  1. net ads join: ✗ FALHOU"
+    echo "  2. realm join: ✗ FALHOU"
     echo ""
-    print_info "Soluções:"
-    echo "  1. Use um usuário com privilégios 'Domain Admin'"
-    echo "  2. Ou delegue permissão específica ao usuário '$user_format'"
-    echo "  3. Verifique se o nome '$(hostname)' já existe no AD"
-    echo "  4. Tente remover o computador manualmente do AD e tentar novamente"
+    
+    # Analisar o log para dar diagnóstico mais preciso
+    print_warning "Análise do erro:"
+    if grep -qi "revoked\|locked" "$LOG_FILE"; then
+        echo "  🔒 CONTA BLOQUEADA - A conta '$USERNAME' está bloqueada no AD"
+        echo ""
+        print_info "SOLUÇÃO IMEDIATA:"
+        echo "  1. Desbloqueie a conta '$USERNAME' no Active Directory"
+        echo "  2. OU use o usuário 'Administrator'"
+        echo "  3. Aguarde alguns minutos e tente novamente"
+    elif grep -qi "denied\|permission" "$LOG_FILE"; then
+        echo "  🚫 SEM PERMISSÃO - O usuário '$USERNAME' não pode adicionar computadores"
+        echo ""
+        print_info "SOLUÇÃO:"
+        echo "  1. Use um usuário com privilégios 'Domain Admin'"
+        echo "  2. OU delegue permissão ao usuário '$USERNAME'"
+    elif grep -qi "password.*incorrect\|authentication.*fail" "$LOG_FILE"; then
+        echo "  🔑 SENHA INCORRETA ou caracteres especiais não tratados"
+        echo ""
+        print_info "SOLUÇÃO:"
+        echo "  1. Verifique se a senha está correta"
+        echo "  2. Se a senha tem caracteres especiais (!@#\$%&*), tente mudá-la temporariamente"
+        echo "  3. Verifique se a senha não expirou no AD"
+    elif grep -qi "already.*joined\|already.*exists" "$LOG_FILE"; then
+        echo "  ⚠️  COMPUTADOR JÁ EXISTE no domínio"
+        echo ""
+        print_info "SOLUÇÃO:"
+        echo "  1. Remova o computador '$(hostname)' manualmente do AD"
+        echo "  2. Execute: realm leave"
+        echo "  3. Tente novamente"
+    else
+        echo "  ❓ ERRO DESCONHECIDO"
+        echo ""
+        print_warning "Últimas 15 linhas do log:"
+        tail -n 15 "$LOG_FILE" | while read -r line; do
+            echo "    $line"
+        done
+    fi
+    
+    echo ""
+    print_separator
+    print_info "Log completo disponível em: $LOG_FILE"
+    echo ""
+    print_info "Comandos úteis para diagnóstico:"
+    echo "  realm discover $DOMAIN"
+    echo "  net ads info"
+    echo "  net ads testjoin"
+    echo "  wbinfo -t"
     
     return 1
 }
