@@ -47,16 +47,15 @@ read -sp "Digite a senha: " PASSWORD
 echo ""
 echo ""
 
-echo -e "${YELLOW}→ Tentando criar keytab com adcli...${NC}"
-
-# Método 1: adcli com stdin
 TEMP_PASS=$(mktemp)
 chmod 600 "$TEMP_PASS"
 printf '%s\n' "$PASSWORD" > "$TEMP_PASS"
 
-if adcli join --domain="$DOMAIN" --login-user="$USERNAME" --stdin-password -v < "$TEMP_PASS" 2>&1; then
+# Método 1: adcli update (para computador já no domínio)
+echo -e "${YELLOW}→ Método 1: Tentando com adcli update...${NC}"
+if adcli update --domain="$DOMAIN" --login-user="$USERNAME" --stdin-password -v < "$TEMP_PASS" 2>&1; then
     rm -f "$TEMP_PASS"
-    echo -e "${GREEN}✓ Keytab criado com sucesso!${NC}"
+    echo -e "${GREEN}✓ Keytab criado com sucesso (adcli update)!${NC}"
     echo ""
     echo "Verificando keytab:"
     klist -k /etc/krb5.keytab
@@ -69,7 +68,7 @@ if adcli join --domain="$DOMAIN" --login-user="$USERNAME" --stdin-password -v < 
     
     if systemctl start sssd; then
         echo -e "${GREEN}✓ SSSD iniciado com sucesso!${NC}"
-        echo ""
+        sleep 2
         systemctl status sssd --no-pager
         
         echo ""
@@ -78,22 +77,94 @@ if adcli join --domain="$DOMAIN" --login-user="$USERNAME" --stdin-password -v < 
         echo -e "${GREEN}╚══════════════════════════════════════════════════════════╝${NC}"
         echo ""
         echo "Teste agora:"
-        echo "  id usuario.dominio"
-        echo "  getent passwd usuario.dominio"
+        echo "  id marcelo.carvalho"
+        echo "  getent passwd marcelo.carvalho"
+        exit 0
     else
         echo -e "${RED}✗ FALHA ao iniciar SSSD${NC}"
         echo ""
-        echo "Verifique os logs:"
-        echo "  sudo journalctl -xeu sssd.service"
-        echo "  sudo /usr/sbin/sssd -i -d 3"
+        journalctl -xeu sssd.service --no-pager -n 20
+        exit 1
     fi
-else
+fi
+
+# Método 2: net ads join (método Samba)
+if command -v net > /dev/null 2>&1; then
+    echo -e "${YELLOW}→ Método 2: Tentando com net ads join...${NC}"
+    if echo "$PASSWORD" | net ads join -U "$USERNAME" 2>&1; then
+        rm -f "$TEMP_PASS"
+        echo -e "${GREEN}✓ Keytab criado com sucesso (net ads)!${NC}"
+        echo ""
+        echo "Verificando keytab:"
+        klist -k /etc/krb5.keytab
+        echo ""
+        
+        # Iniciar SSSD
+        echo -e "${YELLOW}→ Iniciando SSSD...${NC}"
+        systemctl stop sssd
+        rm -rf /var/lib/sss/db/* /var/lib/sss/mc/*
+        
+        if systemctl start sssd; then
+            echo -e "${GREEN}✓ SSSD iniciado com sucesso!${NC}"
+            sleep 2
+            systemctl status sssd --no-pager
+            
+            echo ""
+            echo -e "${GREEN}╔══════════════════════════════════════════════════════════╗${NC}"
+            echo -e "${GREEN}║  SUCESSO! Keytab criado e SSSD iniciado                 ║${NC}"
+            echo -e "${GREEN}╚══════════════════════════════════════════════════════════╝${NC}"
+            echo ""
+            echo "Teste agora:"
+            echo "  id marcelo.carvalho"
+            exit 0
+        else
+            echo -e "${RED}✗ FALHA ao iniciar SSSD${NC}"
+            journalctl -xeu sssd.service --no-pager -n 20
+            exit 1
+        fi
+    fi
+fi
+
+# Método 3: adcli join (última tentativa)
+echo -e "${YELLOW}→ Método 3: Tentando com adcli join...${NC}"
+if adcli join --domain="$DOMAIN" --login-user="$USERNAME" --stdin-password -v < "$TEMP_PASS" 2>&1; then
     rm -f "$TEMP_PASS"
-    echo -e "${RED}✗ Falha ao criar keytab${NC}"
+    echo -e "${GREEN}✓ Keytab criado com sucesso (adcli join)!${NC}"
     echo ""
-    echo "Tente criar manualmente:"
-    echo "  sudo adcli join center.local --login-user=$USERNAME --verbose --show-details"
-    exit 1
+    echo "Verificando keytab:"
+    klist -k /etc/krb5.keytab
+    echo ""
+    
+    # Iniciar SSSD
+    echo -e "${YELLOW}→ Iniciando SSSD...${NC}"
+    systemctl stop sssd
+    rm -rf /var/lib/sss/db/* /var/lib/sss/mc/*
+    
+    if systemctl start sssd; then
+        echo -e "${GREEN}✓ SSSD iniciado com sucesso!${NC}"
+        sleep 2
+        systemctl status sssd --no-pager
+        
+        echo ""
+        echo -e "${GREEN}╔══════════════════════════════════════════════════════════╗${NC}"
+        echo -e "${GREEN}║  SUCESSO! Keytab criado e SSSD iniciado                 ║${NC}"
+        echo -e "${GREEN}╚══════════════════════════════════════════════════════════╝${NC}"
+        echo ""
+        echo "Teste agora:"
+        echo "  id marcelo.carvalho"
+        exit 0
+    else
+        echo -e "${RED}✗ FALHA ao iniciar SSSD${NC}"
+        journalctl -xeu sssd.service --no-pager -n 20
+        exit 1
+    fi
 fi
 
 rm -f "$TEMP_PASS"
+echo -e "${RED}✗ Todos os métodos falharam${NC}"
+echo ""
+echo "Tente manualmente:"
+echo "  sudo adcli update --domain=center.local --login-user=$USERNAME --verbose"
+echo "  OU"
+echo "  sudo net ads join -U $USERNAME"
+exit 1

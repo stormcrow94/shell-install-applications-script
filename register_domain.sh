@@ -1033,23 +1033,79 @@ main() {
     
     if [ ! -f /etc/krb5.keytab ]; then
         print_warning "Arquivo /etc/krb5.keytab não foi criado!"
-        print_info "Tentando criar keytab com adcli..."
+        print_info "Tentando criar keytab..."
         
-        # Tentar criar keytab com adcli
         local temp_pass_keytab=$(mktemp)
         chmod 600 "$temp_pass_keytab"
         printf '%s\n' "$PASSWORD" > "$temp_pass_keytab"
         
-        if adcli join --domain="$DOMAIN" --login-user="$USERNAME" --stdin-password -v < "$temp_pass_keytab" >> "$LOG_FILE" 2>&1; then
-            print_success "Keytab criado com sucesso"
-            log_success "Keytab criado via adcli"
+        # Método 1: Tentar com adcli update (se já está no domínio)
+        print_info "Método 1: adcli update..."
+        if adcli update --domain="$DOMAIN" --login-user="$USERNAME" --stdin-password -v < "$temp_pass_keytab" >> "$LOG_FILE" 2>&1; then
+            print_success "Keytab criado com adcli update"
+            log_success "Keytab criado via adcli update"
+            rm -f "$temp_pass_keytab"
+        # Método 2: Tentar com net ads join
+        elif command -v net > /dev/null 2>&1; then
+            print_info "Método 2: net ads join..."
+            if echo "$PASSWORD" | net ads join -U "$USERNAME" >> "$LOG_FILE" 2>&1; then
+                print_success "Keytab criado com net ads"
+                log_success "Keytab criado via net ads"
+                rm -f "$temp_pass_keytab"
+            else
+                print_error "FALHA ao criar keytab com todos os métodos"
+                print_warning "Tentando método manual com expect..."
+                
+                # Método 3: Usar expect com net ads
+                if command -v expect > /dev/null 2>&1; then
+                    local expect_net=$(mktemp)
+                    cat > "$expect_net" << 'EXPECTEOF'
+set timeout 60
+set username [lindex $argv 0]
+set password [lindex $argv 1]
+spawn net ads join -U $username
+expect {
+    "*password*:" { send "$password\r" }
+    "Password*:" { send "$password\r" }
+    timeout { exit 1 }
+}
+expect eof
+EXPECTEOF
+                    if expect "$expect_net" "$USERNAME" "$PASSWORD" >> "$LOG_FILE" 2>&1; then
+                        print_success "Keytab criado com net ads (expect)"
+                        log_success "Keytab criado via net ads + expect"
+                        rm -f "$temp_pass_keytab" "$expect_net"
+                    else
+                        rm -f "$temp_pass_keytab" "$expect_net"
+                        print_error "FALHA: Não foi possível criar keytab"
+                        print_error "SSSD não funcionará sem o keytab"
+                        print_separator
+                        print_warning "Correção manual necessária:"
+                        echo "  sudo net ads join -U $USERNAME"
+                        echo "  OU"
+                        echo "  sudo adcli update --domain=$DOMAIN --login-user=$USERNAME"
+                        exit 1
+                    fi
+                    rm -f "$expect_net"
+                else
+                    rm -f "$temp_pass_keytab"
+                    print_error "FALHA: Não foi possível criar keytab"
+                    print_error "SSSD não funcionará sem o keytab"
+                    print_separator
+                    print_warning "Execute manualmente:"
+                    echo "  sudo ./fix_keytab.sh"
+                    exit 1
+                fi
+            fi
         else
+            rm -f "$temp_pass_keytab"
             print_error "FALHA ao criar keytab"
             print_error "SSSD não funcionará sem o keytab"
-            rm -f "$temp_pass_keytab"
+            print_separator
+            print_warning "Execute manualmente:"
+            echo "  sudo ./fix_keytab.sh"
             exit 1
         fi
-        rm -f "$temp_pass_keytab"
     else
         print_success "Keytab existe: /etc/krb5.keytab"
         
