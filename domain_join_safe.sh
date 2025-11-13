@@ -60,8 +60,13 @@ echo -e "${YELLOW}════════════════════�
 echo ""
 
 # Configurar Samba primeiro
+# Truncar hostname para 15 caracteres (limite NetBIOS)
+HOSTNAME_SHORT=$(hostname | cut -c1-15 | tr '[:lower:]' '[:upper:]')
+echo "→ Nome NetBIOS: $HOSTNAME_SHORT (máx 15 caracteres)"
+
 cat > /etc/samba/smb.conf << EOFSAMBA
 [global]
+   netbios name = $HOSTNAME_SHORT
    workgroup = ${DOMAIN%%.*}
    security = ads
    realm = ${DOMAIN^^}
