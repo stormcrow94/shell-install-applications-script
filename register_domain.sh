@@ -541,34 +541,117 @@ configure_sssd() {
     print_info "Configurando SSSD..."
     log_info "Configurando arquivo $sssd_conf"
     
+    # Verificar se o arquivo existe
+    if [ ! -f "$sssd_conf" ]; then
+        print_warning "Arquivo $sssd_conf não encontrado"
+        print_info "Criando configuração SSSD do zero..."
+        log_warning "Arquivo sssd.conf não existe, criando novo"
+        
+        # Criar diretório se não existir
+        mkdir -p /etc/sssd
+        
+        # Criar configuração completa
+        local realm=$(echo "$DOMAIN" | tr '[:lower:]' '[:upper:]')
+        cat > "$sssd_conf" << EOFSSSD
+[sssd]
+domains = $DOMAIN
+config_file_version = 2
+services = nss, pam
+
+[domain/$DOMAIN]
+ad_domain = $DOMAIN
+krb5_realm = $realm
+realmd_tags = manages-system joined-with-adcli
+cache_credentials = True
+id_provider = ad
+krb5_store_password_if_offline = True
+default_shell = /bin/bash
+ldap_id_mapping = True
+use_fully_qualified_names = False
+fallback_homedir = /home/%u
+access_provider = simple
+simple_allow_groups = $ADMIN_GROUP
+EOFSSSD
+        
+        chmod 600 "$sssd_conf"
+        print_success "Arquivo $sssd_conf criado"
+        log_success "Configuração SSSD criada do zero"
+        return 0
+    fi
+    
     # Fazer backup
     backup_file "$sssd_conf"
     
-    # Modificar configurações
-    if grep -q "use_fully_qualified_names" "$sssd_conf"; then
-        sed -i 's/use_fully_qualified_names = True/use_fully_qualified_names = False/' "$sssd_conf"
-        sed -i 's/use_fully_qualified_names = true/use_fully_qualified_names = False/' "$sssd_conf"
-    else
-        # Adicionar após a linha [domain/...]
-        sed -i "/\[domain\//a use_fully_qualified_names = False" "$sssd_conf"
+    # Verificar se o domínio está habilitado na seção [sssd]
+    if ! grep -q "^domains.*=.*$DOMAIN" "$sssd_conf"; then
+        print_warning "Domínio não está habilitado em [sssd]"
+        log_warning "Adicionando domínio à lista de domínios habilitados"
+        
+        # Verificar se linha domains existe
+        if grep -q "^domains" "$sssd_conf"; then
+            # Adicionar domínio à lista existente
+            sed -i "s/^domains = .*/domains = $DOMAIN/" "$sssd_conf"
+        else
+            # Adicionar linha domains após [sssd]
+            sed -i "/^\[sssd\]/a domains = $DOMAIN" "$sssd_conf"
+        fi
     fi
     
-    # Configurar fallback_homedir
-    if grep -q "fallback_homedir" "$sssd_conf"; then
-        sed -i 's|fallback_homedir = .*|fallback_homedir = /home/%u|' "$sssd_conf"
+    # Verificar se seção [domain/$DOMAIN] existe
+    if ! grep -q "^\[domain/$DOMAIN\]" "$sssd_conf" && ! grep -q "^\[domain\/$DOMAIN\]" "$sssd_conf"; then
+        print_error "Seção [domain/$DOMAIN] não encontrada no arquivo"
+        log_error "Seção do domínio não existe no sssd.conf"
+        
+        # Criar seção do domínio
+        local realm=$(echo "$DOMAIN" | tr '[:lower:]' '[:upper:]')
+        cat >> "$sssd_conf" << EOFSSSD
+
+[domain/$DOMAIN]
+ad_domain = $DOMAIN
+krb5_realm = $realm
+realmd_tags = manages-system joined-with-adcli
+cache_credentials = True
+id_provider = ad
+krb5_store_password_if_offline = True
+default_shell = /bin/bash
+ldap_id_mapping = True
+use_fully_qualified_names = False
+fallback_homedir = /home/%u
+access_provider = simple
+simple_allow_groups = $ADMIN_GROUP
+EOFSSSD
+        print_success "Seção do domínio criada"
     else
-        sed -i "/\[domain\//a fallback_homedir = /home/%u" "$sssd_conf"
-    fi
-    
-    # Modificar access_provider para simple
-    sed -i 's/access_provider = ad/access_provider = simple/' "$sssd_conf"
-    sed -i 's/access_provider = AD/access_provider = simple/' "$sssd_conf"
-    
-    # Adicionar grupo ao acesso
-    if ! grep -q "simple_allow_groups" "$sssd_conf"; then
-        sed -i "/access_provider = simple/a simple_allow_groups = $ADMIN_GROUP" "$sssd_conf"
-    else
-        sed -i "s/simple_allow_groups = .*/simple_allow_groups = $ADMIN_GROUP/" "$sssd_conf"
+        # Modificar configurações existentes
+        if grep -q "use_fully_qualified_names" "$sssd_conf"; then
+            sed -i 's/use_fully_qualified_names = True/use_fully_qualified_names = False/' "$sssd_conf"
+            sed -i 's/use_fully_qualified_names = true/use_fully_qualified_names = False/' "$sssd_conf"
+        else
+            # Adicionar após a linha [domain/...]
+            sed -i "/\[domain\/$DOMAIN\]/a use_fully_qualified_names = False" "$sssd_conf"
+        fi
+        
+        # Configurar fallback_homedir
+        if grep -q "fallback_homedir" "$sssd_conf"; then
+            sed -i 's|fallback_homedir = .*|fallback_homedir = /home/%u|' "$sssd_conf"
+        else
+            sed -i "/\[domain\/$DOMAIN\]/a fallback_homedir = /home/%u" "$sssd_conf"
+        fi
+        
+        # Modificar access_provider para simple
+        if grep -q "access_provider" "$sssd_conf"; then
+            sed -i 's/access_provider = ad/access_provider = simple/' "$sssd_conf"
+            sed -i 's/access_provider = AD/access_provider = simple/' "$sssd_conf"
+        else
+            sed -i "/\[domain\/$DOMAIN\]/a access_provider = simple" "$sssd_conf"
+        fi
+        
+        # Adicionar grupo ao acesso
+        if ! grep -q "simple_allow_groups" "$sssd_conf"; then
+            sed -i "/access_provider = simple/a simple_allow_groups = $ADMIN_GROUP" "$sssd_conf"
+        else
+            sed -i "s/simple_allow_groups = .*/simple_allow_groups = $ADMIN_GROUP/" "$sssd_conf"
+        fi
     fi
     
     # Ajustar permissões
@@ -576,6 +659,17 @@ configure_sssd() {
     
     print_success "SSSD configurado"
     log_success "Configuração do SSSD atualizada"
+    
+    # Mostrar configuração para debug
+    print_info "Verificando configuração..."
+    if grep -q "^domains.*=.*$DOMAIN" "$sssd_conf" && grep -q "^\[domain/$DOMAIN\]" "$sssd_conf"; then
+        print_success "Domínio $DOMAIN está habilitado e configurado"
+        log_success "Verificação de configuração: OK"
+    else
+        print_error "Problema na configuração do domínio"
+        log_error "Verificação de configuração falhou"
+        return 1
+    fi
     
     return 0
 }
@@ -648,23 +742,63 @@ restart_domain_services() {
     print_info "Reiniciando serviços..."
     log_info "Reiniciando serviços de domínio"
     
+    # Parar SSSD antes de limpar cache
+    print_info "Parando SSSD..."
+    systemctl stop sssd >> "$LOG_FILE" 2>&1
+    
+    # Limpar cache do SSSD (importante para evitar problemas)
+    print_info "Limpando cache do SSSD..."
+    rm -rf /var/lib/sss/db/* >> "$LOG_FILE" 2>&1
+    rm -rf /var/lib/sss/mc/* >> "$LOG_FILE" 2>&1
+    log_info "Cache do SSSD limpo"
+    
+    # Habilitar e iniciar SSSD
+    print_info "Iniciando SSSD..."
+    systemctl enable sssd >> "$LOG_FILE" 2>&1
+    
+    if systemctl start sssd >> "$LOG_FILE" 2>&1; then
+        print_success "SSSD iniciado com sucesso"
+        log_success "SSSD iniciado"
+    else
+        print_error "FALHA ao iniciar SSSD"
+        log_error "Falha ao iniciar SSSD"
+        
+        # Mostrar erro do journalctl
+        print_warning "Erro do SSSD:"
+        journalctl -xeu sssd.service --no-pager -n 20 | tail -10 | while read -r line; do
+            echo "  $line"
+        done
+        
+        return 1
+    fi
+    
+    # Verificar se SSSD está realmente rodando
+    sleep 2
+    if systemctl is-active --quiet sssd; then
+        print_success "SSSD está rodando corretamente"
+        log_success "SSSD verificado: ativo"
+    else
+        print_error "SSSD não está rodando!"
+        log_error "SSSD não está ativo após iniciar"
+        return 1
+    fi
+    
     # Habilitar oddjobd
     if systemctl list-unit-files | grep -q "oddjobd"; then
+        print_info "Configurando oddjobd..."
         enable_service "oddjobd"
         restart_service "oddjobd"
     fi
     
-    # Reiniciar SSSD
-    restart_service "sssd"
-    
     # Reiniciar SSH
+    print_info "Reiniciando SSH..."
     if [[ "$DISTRO" == "ubuntu" || "$DISTRO" == "debian" ]]; then
         restart_service "ssh"
     else
         restart_service "sshd"
     fi
     
-    print_success "Serviços reiniciados"
+    print_success "Todos os serviços reiniciados"
     log_success "Serviços reiniciados com sucesso"
     
     return 0
@@ -679,16 +813,68 @@ verify_domain_status() {
     # Verificar realm
     local realm_status=$(realm list 2>/dev/null)
     
-    if [ -n "$realm_status" ]; then
-        print_success "Sistema está integrado ao domínio"
-        echo "$realm_status" | grep -E "domain-name|configured"
-        log_success "Verificação de domínio: OK"
+    if [ -z "$realm_status" ]; then
+        print_error "FALHA: realm list não retorna nenhum domínio!"
+        log_error "realm list vazio - ingresso pode não ter sido persistido"
+        
+        print_warning "Tentando re-configurar o domínio..."
+        
+        # Tentar descobrir o domínio novamente
+        if realm discover "$DOMAIN" >> "$LOG_FILE" 2>&1; then
+            print_info "Domínio $DOMAIN ainda é descobrível"
+            
+            # Verificar se o computador está no domínio via adcli
+            if adcli testjoin >> "$LOG_FILE" 2>&1; then
+                print_success "Computador ainda está no domínio (verificado com adcli)"
+                log_success "adcli testjoin: OK"
+                
+                # O problema é só o realm list, SSSD deveria funcionar
+                print_warning "O ingresso está OK, mas realm list não mostra"
+                print_info "Isso pode ser normal em algumas configurações"
+            else
+                print_error "Computador NÃO está no domínio!"
+                log_error "adcli testjoin falhou"
+                return 1
+            fi
+        else
+            print_error "Não consegue descobrir o domínio"
+            return 1
+        fi
     else
-        print_warning "Não foi possível verificar status do domínio"
-        log_warning "Falha na verificação de status do domínio"
+        print_success "Sistema está integrado ao domínio"
+        echo ""
+        echo "$realm_status" | grep -E "domain-name|configured|server-software|client-software"
+        log_success "Verificação de domínio: OK"
+        
+        # Verificar se está configurado
+        if echo "$realm_status" | grep -q "configured: kerberos-member"; then
+            print_success "Configuração: kerberos-member (OK)"
+        elif echo "$realm_status" | grep -q "configured: no"; then
+            print_warning "Status 'configured: no' - pode precisar reiniciar"
+        fi
     fi
     
     print_separator
+    
+    # Testar SSSD diretamente
+    print_info "Testando SSSD..."
+    if systemctl is-active --quiet sssd; then
+        print_success "SSSD está ativo"
+        
+        # Tentar buscar informação do domínio via getent
+        print_info "Testando resolução de nomes..."
+        if getent passwd | grep -q "@$DOMAIN\|^[a-z]*\.[a-z]*:"; then
+            print_success "SSSD está resolvendo usuários do domínio"
+        else
+            print_warning "SSSD ativo mas ainda não resolveu usuários (pode levar alguns segundos)"
+        fi
+    else
+        print_error "SSSD NÃO está ativo!"
+        return 1
+    fi
+    
+    print_separator
+    return 0
 }
 
 # Exibir informações finais
@@ -712,11 +898,26 @@ show_final_info() {
     
     print_separator
     print_info "Para verificar usuários do domínio:"
-    echo "  id usuario@$DOMAIN"
+    echo "  id usuario (sem @domínio)"
+    echo "  getent passwd usuario"
     
     print_info "Para listar informações do domínio:"
     echo "  realm list"
+    echo "  sssctl domain-list"
     
+    print_info "Para verificar status do SSSD:"
+    echo "  sudo systemctl status sssd"
+    echo "  sudo sssctl domain-status $DOMAIN"
+    
+    print_separator
+    print_info "Configuração do SSSD:"
+    if [ -f "/etc/sssd/sssd.conf" ]; then
+        echo "  Arquivo: /etc/sssd/sssd.conf"
+        echo "  Domínio configurado: $DOMAIN"
+        echo "  Grupo com acesso: $ADMIN_GROUP"
+    fi
+    
+    print_separator
     print_info "Log salvo em: $LOG_FILE"
     
     log_success "Registro no domínio concluído com sucesso"
@@ -787,10 +988,23 @@ main() {
         exit 1
     fi
     
-    # Configurar SSSD
+    # Configurar SSSD (CRÍTICO - não continuar se falhar)
+    print_separator
     if ! configure_sssd; then
-        print_warning "Falha ao configurar SSSD, continuando..."
+        print_error "FALHA CRÍTICA ao configurar SSSD"
+        print_error "O sistema foi registrado no domínio, mas o SSSD não está funcionando"
+        print_separator
+        print_warning "Para corrigir manualmente:"
+        echo "  1. sudo systemctl stop sssd"
+        echo "  2. sudo nano /etc/sssd/sssd.conf"
+        echo "  3. Adicione a seção [domain/$DOMAIN] corretamente"
+        echo "  4. sudo chmod 600 /etc/sssd/sssd.conf"
+        echo "  5. sudo rm -rf /var/lib/sss/db/* /var/lib/sss/mc/*"
+        echo "  6. sudo systemctl start sssd"
+        exit 1
     fi
+    
+    print_separator
     
     # Configurar sudoers
     if ! configure_sudoers; then
@@ -802,13 +1016,25 @@ main() {
         print_warning "Falha ao configurar PAM, home directories podem não ser criados automaticamente"
     fi
     
-    # Reiniciar serviços
+    # Reiniciar serviços (CRÍTICO)
     if ! restart_domain_services; then
-        print_warning "Falha ao reiniciar alguns serviços"
+        print_error "FALHA CRÍTICA ao reiniciar serviços"
+        print_error "O SSSD não está funcionando corretamente"
+        print_separator
+        print_warning "Para diagnosticar:"
+        echo "  sudo journalctl -xeu sssd.service"
+        echo "  sudo cat /etc/sssd/sssd.conf"
+        echo "  sudo sssctl domain-list"
+        exit 1
     fi
     
+    print_separator
+    
     # Verificar status
-    verify_domain_status
+    if ! verify_domain_status; then
+        print_warning "Verificação de status falhou, mas configuração pode estar OK"
+        print_info "Teste manualmente: id usuario.dominio"
+    fi
     
     # Exibir informações finais
     show_final_info
