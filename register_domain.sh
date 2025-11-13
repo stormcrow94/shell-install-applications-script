@@ -74,6 +74,73 @@ install_domain_packages() {
     fi
 }
 
+# Verificar pré-requisitos de rede
+check_domain_prerequisites() {
+    local domain="$1"
+    local all_ok=true
+    
+    print_info "Verificando pré-requisitos..."
+    log_info "Verificando pré-requisitos para ingresso no domínio"
+    
+    # Verificar DNS
+    print_info "Verificando configuração de DNS..."
+    if host "$domain" > /dev/null 2>&1 || nslookup "$domain" > /dev/null 2>&1; then
+        print_success "DNS configurado corretamente para $domain"
+        log_success "DNS verificado: OK"
+    else
+        print_error "Falha ao resolver o domínio $domain via DNS"
+        print_warning "Verifique o arquivo /etc/resolv.conf"
+        log_error "Falha na resolução DNS do domínio"
+        all_ok=false
+    fi
+    
+    # Verificar se NTP/Timesyncd está ativo (importante para Kerberos)
+    print_info "Verificando sincronização de tempo..."
+    if systemctl is-active --quiet systemd-timesyncd || systemctl is-active --quiet ntpd || systemctl is-active --quiet chronyd; then
+        print_success "Serviço de sincronização de tempo está ativo"
+        log_success "Sincronização de tempo: OK"
+    else
+        print_warning "Nenhum serviço de sincronização de tempo detectado"
+        print_warning "A dessincronização de tempo pode causar falhas no Kerberos"
+        log_warning "Serviço de sincronização de tempo não detectado"
+        # Não marcar como erro crítico, apenas aviso
+    fi
+    
+    # Verificar portas necessárias (se tiver nc/netcat)
+    if command -v nc > /dev/null 2>&1 || command -v netcat > /dev/null 2>&1; then
+        print_info "Verificando conectividade com portas do domínio..."
+        local domain_ip=$(host "$domain" 2>/dev/null | grep "has address" | head -1 | awk '{print $NF}')
+        
+        if [ -n "$domain_ip" ]; then
+            # Testar porta Kerberos (88)
+            if timeout 2 bash -c "echo > /dev/tcp/$domain_ip/88" 2>/dev/null; then
+                print_success "Porta 88 (Kerberos) acessível"
+                log_success "Porta 88 acessível"
+            else
+                print_warning "Porta 88 (Kerberos) pode estar bloqueada"
+                log_warning "Porta 88 inacessível"
+            fi
+            
+            # Testar porta LDAP (389)
+            if timeout 2 bash -c "echo > /dev/tcp/$domain_ip/389" 2>/dev/null; then
+                print_success "Porta 389 (LDAP) acessível"
+                log_success "Porta 389 acessível"
+            else
+                print_warning "Porta 389 (LDAP) pode estar bloqueada"
+                log_warning "Porta 389 inacessível"
+            fi
+        fi
+    fi
+    
+    print_separator
+    
+    if [ "$all_ok" = true ]; then
+        return 0
+    else
+        return 1
+    fi
+}
+
 # Coletar informações do domínio
 collect_domain_info() {
     print_header "Informações do Domínio"
@@ -121,34 +188,60 @@ join_domain() {
     print_info "Ingressando no domínio $DOMAIN..."
     log_info "Iniciando ingresso no domínio: $DOMAIN"
     
-    # Usar expect ou passar senha via echo baseado na distribuição
-    if [[ "$DISTRO" == "ubuntu" || "$DISTRO" == "debian" ]]; then
-        echo "$PASSWORD" | realm join --user="$USERNAME" "$DOMAIN" >> "$LOG_FILE" 2>&1
+    # Verificar se o domínio é acessível primeiro
+    print_info "Verificando descoberta do domínio..."
+    if realm discover "$DOMAIN" >> "$LOG_FILE" 2>&1; then
+        print_success "Domínio descoberto com sucesso"
+        log_success "Domínio $DOMAIN descoberto"
     else
-        realm join --user="$USERNAME" "$DOMAIN" << EOF >> "$LOG_FILE" 2>&1
-$PASSWORD
-EOF
+        print_error "Não foi possível descobrir o domínio $DOMAIN"
+        log_error "Falha na descoberta do domínio"
+        print_warning "Verifique:"
+        echo "  - Configuração de DNS"
+        echo "  - Conectividade de rede com o domínio"
+        return 1
     fi
     
-    local exit_code=$?
+    # Passar senha via stdin de forma mais robusta
+    print_info "Tentando ingressar no domínio..."
     
-    if [ $exit_code -eq 0 ]; then
+    # Método 1: Tentar com echo e pipe (mais compatível)
+    if echo -n "$PASSWORD" | realm join --user="$USERNAME" "$DOMAIN" --verbose >> "$LOG_FILE" 2>&1; then
         print_success "Computador registrado no domínio com sucesso"
         log_success "Ingresso no domínio realizado com sucesso"
         return 0
-    else
-        print_error "Falha ao ingressar no domínio"
-        log_error "Falha no ingresso no domínio (código: $exit_code)"
-        
-        # Exibir possíveis causas
-        print_warning "Possíveis causas:"
-        echo "  - Credenciais incorretas"
-        echo "  - Domínio não acessível"
-        echo "  - Configuração de DNS incorreta"
-        echo "  - Firewall bloqueando portas necessárias"
-        
-        return 1
     fi
+    
+    # Método 2: Se falhar, tentar com printf (evita problemas com echo)
+    log_warning "Primeira tentativa falhou, tentando método alternativo..."
+    print_info "Tentando método alternativo..."
+    
+    if printf "%s" "$PASSWORD" | realm join --user="$USERNAME" "$DOMAIN" --verbose >> "$LOG_FILE" 2>&1; then
+        print_success "Computador registrado no domínio com sucesso"
+        log_success "Ingresso no domínio realizado com sucesso (método alternativo)"
+        return 0
+    fi
+    
+    # Se ambos falharam
+    print_error "Falha ao ingressar no domínio"
+    log_error "Falha no ingresso no domínio - todos os métodos falharam"
+    
+    # Exibir últimas linhas do log para diagnóstico
+    print_warning "Últimas mensagens de erro:"
+    tail -n 10 "$LOG_FILE" | grep -i "error\|fail\|denied" | while read -r line; do
+        echo "  $line"
+    done
+    
+    # Exibir possíveis causas
+    print_warning "Possíveis causas:"
+    echo "  - Credenciais incorretas (verifique usuário e senha)"
+    echo "  - Domínio não acessível pela rede"
+    echo "  - Configuração de DNS incorreta (verifique /etc/resolv.conf)"
+    echo "  - Firewall bloqueando portas necessárias (88, 389, 445, 464)"
+    echo "  - Usuário não tem permissão para adicionar computadores ao domínio"
+    echo "  - Pacote de tempo dessincronizado com o servidor de domínio"
+    
+    return 1
 }
 
 # Configurar SSSD
@@ -377,6 +470,16 @@ main() {
     if ! collect_domain_info; then
         print_error "Informações do domínio incompletas"
         exit 1
+    fi
+    
+    # Verificar pré-requisitos de rede e configuração
+    if ! check_domain_prerequisites "$DOMAIN"; then
+        print_error "Alguns pré-requisitos não foram atendidos"
+        if ! prompt_confirm "Deseja continuar mesmo assim?"; then
+            print_warning "Operação cancelada"
+            log_info "Operação cancelada devido a falha nos pré-requisitos"
+            exit 1
+        fi
     fi
     
     # Confirmar antes de continuar
