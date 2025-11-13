@@ -183,6 +183,56 @@ collect_domain_info() {
     return 0
 }
 
+# Testar credenciais com Kerberos
+test_kerberos_auth() {
+    local domain="$1"
+    local username="$2"
+    local password="$3"
+    
+    print_info "Testando autenticação Kerberos..."
+    log_info "Testando credenciais com kinit"
+    
+    # Converter domínio para uppercase para Kerberos
+    local realm=$(echo "$domain" | tr '[:lower:]' '[:upper:]')
+    
+    # Tentar diferentes formatos de usuário
+    local formats=(
+        "${username}@${realm}"
+        "${username}"
+        "${username}@${domain}"
+    )
+    
+    for user_format in "${formats[@]}"; do
+        print_info "Testando formato: $user_format"
+        log_info "Tentando kinit com formato: $user_format"
+        
+        # Testar autenticação
+        if echo "$password" | kinit "$user_format" >> "$LOG_FILE" 2>&1; then
+            print_success "Autenticação Kerberos bem-sucedida com $user_format"
+            log_success "Autenticação Kerberos OK: $user_format"
+            
+            # Limpar ticket
+            kdestroy >> "$LOG_FILE" 2>&1
+            
+            # Retornar o formato que funcionou
+            echo "$user_format"
+            return 0
+        fi
+    done
+    
+    # Se nenhum formato funcionou
+    print_error "Falha na autenticação Kerberos com todos os formatos testados"
+    log_error "Falha na autenticação Kerberos"
+    
+    # Mostrar erro do kinit
+    print_warning "Detalhes do erro de autenticação:"
+    tail -n 5 "$LOG_FILE" | grep -i "error\|fail\|incorrect" | while read -r line; do
+        echo "  $line"
+    done
+    
+    return 1
+}
+
 # Ingressar no domínio
 join_domain() {
     print_info "Ingressando no domínio $DOMAIN..."
@@ -202,8 +252,28 @@ join_domain() {
         return 1
     fi
     
+    print_separator
+    
+    # Testar autenticação Kerberos antes de tentar ingressar
+    local working_user_format
+    working_user_format=$(test_kerberos_auth "$DOMAIN" "$USERNAME" "$PASSWORD")
+    
+    if [ $? -ne 0 ]; then
+        print_error "As credenciais fornecidas não são válidas"
+        print_warning "Possíveis problemas:"
+        echo "  - Senha incorreta"
+        echo "  - Usuário '$USERNAME' não existe no domínio"
+        echo "  - Usuário está bloqueado ou desabilitado"
+        echo "  - Política de senha/autenticação bloqueando"
+        log_error "Falha no teste de autenticação Kerberos"
+        return 1
+    fi
+    
+    print_separator
+    
     # Passar senha via stdin de forma mais robusta
-    print_info "Tentando ingressar no domínio..."
+    print_info "Tentando ingressar no domínio com usuário validado..."
+    log_info "Usando formato de usuário: $USERNAME"
     
     # Método 1: Tentar com echo e pipe (mais compatível)
     if echo -n "$PASSWORD" | realm join --user="$USERNAME" "$DOMAIN" --verbose >> "$LOG_FILE" 2>&1; then
@@ -222,24 +292,60 @@ join_domain() {
         return 0
     fi
     
-    # Se ambos falharam
+    # Método 3: Tentar com opção --one-time-password via arquivo temporário
+    log_warning "Segunda tentativa falhou, tentando com arquivo temporário..."
+    print_info "Tentando terceiro método..."
+    
+    local temp_pass_file=$(mktemp)
+    echo "$PASSWORD" > "$temp_pass_file"
+    chmod 600 "$temp_pass_file"
+    
+    if cat "$temp_pass_file" | realm join --user="$USERNAME" "$DOMAIN" --verbose >> "$LOG_FILE" 2>&1; then
+        rm -f "$temp_pass_file"
+        print_success "Computador registrado no domínio com sucesso"
+        log_success "Ingresso no domínio realizado com sucesso (método arquivo)"
+        return 0
+    fi
+    
+    rm -f "$temp_pass_file"
+    
+    # Método 4: Tentar usar adcli diretamente (às vezes funciona melhor)
+    log_warning "Tentando método direto com adcli..."
+    print_info "Tentando quarto método (adcli)..."
+    
+    local realm=$(echo "$DOMAIN" | tr '[:lower:]' '[:upper:]')
+    
+    if echo "$PASSWORD" | adcli join --domain="$DOMAIN" --login-user="$USERNAME" --stdin-password -v >> "$LOG_FILE" 2>&1; then
+        print_success "Computador registrado no domínio com sucesso"
+        log_success "Ingresso no domínio realizado com sucesso (adcli)"
+        
+        # Configurar realm após adcli
+        realm list >> "$LOG_FILE" 2>&1
+        
+        return 0
+    fi
+    
+    # Se todos falharam
     print_error "Falha ao ingressar no domínio"
     log_error "Falha no ingresso no domínio - todos os métodos falharam"
     
     # Exibir últimas linhas do log para diagnóstico
     print_warning "Últimas mensagens de erro:"
-    tail -n 10 "$LOG_FILE" | grep -i "error\|fail\|denied" | while read -r line; do
+    tail -n 15 "$LOG_FILE" | grep -i "error\|fail\|denied\|couldn't" | while read -r line; do
         echo "  $line"
     done
     
     # Exibir possíveis causas
     print_warning "Possíveis causas:"
-    echo "  - Credenciais incorretas (verifique usuário e senha)"
-    echo "  - Domínio não acessível pela rede"
-    echo "  - Configuração de DNS incorreta (verifique /etc/resolv.conf)"
-    echo "  - Firewall bloqueando portas necessárias (88, 389, 445, 464)"
     echo "  - Usuário não tem permissão para adicionar computadores ao domínio"
-    echo "  - Pacote de tempo dessincronizado com o servidor de domínio"
+    echo "  - Limite de computadores no domínio atingido"
+    echo "  - Nome do computador já existe no domínio"
+    echo "  - Política de grupo bloqueando o ingresso"
+    echo "  - Versão incompatível do protocolo"
+    
+    print_separator
+    print_info "Dica: Tente usar um usuário com privilégios de Domain Admin"
+    print_info "Ou peça ao administrador para criar permissões específicas"
     
     return 1
 }
