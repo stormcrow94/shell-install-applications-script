@@ -360,6 +360,39 @@ join_domain() {
     
     print_separator
     
+    # Verificar se já está no domínio e limpar se necessário
+    print_info "Verificando registros anteriores..."
+    if realm list 2>/dev/null | grep -q "configured:"; then
+        print_warning "Sistema já está registrado em um domínio"
+        print_info "Removendo registro anterior para fazer nova instalação..."
+        
+        # Parar serviços primeiro
+        systemctl stop sssd >> "$LOG_FILE" 2>&1 || true
+        systemctl stop winbind >> "$LOG_FILE" 2>&1 || true
+        
+        # Sair do domínio
+        realm leave >> "$LOG_FILE" 2>&1 || true
+        
+        # Limpar cache
+        rm -rf /var/lib/sss/db/* >> "$LOG_FILE" 2>&1 || true
+        rm -rf /var/lib/sss/mc/* >> "$LOG_FILE" 2>&1 || true
+        
+        print_success "Registro anterior removido"
+        log_info "Registro anterior do domínio removido"
+        
+        # Aguardar propagação
+        sleep 2
+    fi
+    
+    # Limpar keytab antigo
+    if [ -f /etc/krb5.keytab ]; then
+        print_info "Removendo keytab antigo..."
+        rm -f /etc/krb5.keytab >> "$LOG_FILE" 2>&1 || true
+        log_info "Keytab antigo removido"
+    fi
+    
+    print_separator
+    
     # Instalar Samba se necessário (para net ads join)
     if ! command -v net > /dev/null 2>&1; then
         print_info "Instalando Samba para método net ads..."
