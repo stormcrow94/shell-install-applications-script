@@ -513,6 +513,15 @@ EXPECTEOF
     print_error "Falha ao ingressar no domínio"
     log_error "Falha no ingresso no domínio - todos os métodos falharam"
     
+    # Verificar se pelo menos o keytab foi criado
+    if [ -f /etc/krb5.keytab ]; then
+        print_warning "Keytab existe, mas join parece ter falhado"
+        if klist -k /etc/krb5.keytab >> "$LOG_FILE" 2>&1; then
+            print_info "Keytab contém principals, pode estar OK"
+            return 0
+        fi
+    fi
+    
     # Exibir últimas linhas do log para diagnóstico
     print_warning "Últimas mensagens de erro:"
     tail -n 15 "$LOG_FILE" | grep -i "error\|fail\|denied\|couldn't" | while read -r line; do
@@ -1016,6 +1025,43 @@ main() {
     if ! join_domain; then
         print_error "Falha ao ingressar no domínio"
         exit 1
+    fi
+    
+    # Verificar se keytab foi criado (CRÍTICO para SSSD funcionar)
+    print_separator
+    print_info "Verificando keytab do Kerberos..."
+    
+    if [ ! -f /etc/krb5.keytab ]; then
+        print_warning "Arquivo /etc/krb5.keytab não foi criado!"
+        print_info "Tentando criar keytab com adcli..."
+        
+        # Tentar criar keytab com adcli
+        local temp_pass_keytab=$(mktemp)
+        chmod 600 "$temp_pass_keytab"
+        printf '%s\n' "$PASSWORD" > "$temp_pass_keytab"
+        
+        if adcli join --domain="$DOMAIN" --login-user="$USERNAME" --stdin-password -v < "$temp_pass_keytab" >> "$LOG_FILE" 2>&1; then
+            print_success "Keytab criado com sucesso"
+            log_success "Keytab criado via adcli"
+        else
+            print_error "FALHA ao criar keytab"
+            print_error "SSSD não funcionará sem o keytab"
+            rm -f "$temp_pass_keytab"
+            exit 1
+        fi
+        rm -f "$temp_pass_keytab"
+    else
+        print_success "Keytab existe: /etc/krb5.keytab"
+        
+        # Verificar conteúdo do keytab
+        if klist -k /etc/krb5.keytab >> "$LOG_FILE" 2>&1; then
+            local keytab_count=$(klist -k /etc/krb5.keytab 2>/dev/null | grep -c "@")
+            print_success "Keytab contém $keytab_count principal(s)"
+            log_success "Keytab verificado: $keytab_count principals"
+        else
+            print_warning "Keytab existe mas parece vazio ou corrompido"
+            log_warning "Keytab pode estar corrompido"
+        fi
     fi
     
     # Configurar SSSD (CRÍTICO - não continuar se falhar)
