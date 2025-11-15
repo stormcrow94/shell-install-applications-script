@@ -41,15 +41,11 @@ jobs:
         run: |
           cp WIKI.md wiki/Home.md
           cd wiki
-          if git diff --quiet && git diff --staged --quiet; then
+          if [ -z "$(git status --porcelain)" ]; then
             echo "No changes to publish."
             exit 0
           fi
           git add Home.md
-          if git diff --cached --quiet; then
-            echo "No diff after staging."
-            exit 0
-          fi
           git commit -m "docs: sync wiki from repository @ ${{ github.sha }}"
           git push origin HEAD:master || git push origin HEAD:main || git push
 
