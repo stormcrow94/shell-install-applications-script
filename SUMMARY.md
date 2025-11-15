@@ -84,10 +84,6 @@ ZABBIX_PROXY_SERVER="10.130.3.201"
 ZABBIX_SERVER_PORT="10051"
 ZABBIX_AGENT_PORT="10050"
 
-# Kaspersky
-KASPERSKY_FILE_SERVER="10.130.2.10"
-KASPERSKY_SHARE_NAME="..."
-
 # Domínio
 DEFAULT_DOMAIN=""
 DEFAULT_ADMIN_GROUP=""
@@ -97,6 +93,8 @@ AUTO_BACKUP="true"
 CHECK_INTERNET="true"
 VERBOSE_MODE="false"
 ```
+
+> O instalador Sophos usa o script oficial `SophosSetup.sh`; personalize argumentos diretamente ao executar o script.
 
 **Resultado:** Configuração 10x mais simples.
 
@@ -228,30 +226,14 @@ servidor-       # não pode terminar com hífen
 
 ---
 
-### `KASPERSKY.sh` (Melhorado)
+### `SophosSetup.sh` (Novo)
 
-**Antes:** Script funcional mas básico
-
-**Agora:**
-- ✅ Instalação automática de cifs-utils
-- ✅ Tratamento de erros de montagem
-- ✅ Desmontagem automática (trap EXIT)
-- ✅ Validação de credenciais
-- ✅ Verificação de arquivos
-- ✅ Mensagens de diagnóstico
-- ✅ Logging completo
-
-**Segurança:**
-```bash
-# Trap garante desmontagem mesmo em erro
-trap cleanup EXIT
-
-cleanup() {
-    if mountpoint -q "$MOUNT_DIR"; then
-        umount "$MOUNT_DIR"
-    fi
-}
-```
+- ✅ Integra o instalador oficial da Sophos diretamente ao menu
+- ✅ Mantém logs nativos em `/opt/sophos-spl/logs`
+- ✅ Verifica compatibilidade de kernel, pacotes e espaço em disco
+- ✅ Aceita argumentos como `--group`, `--device-type`, `--register`
+- ✅ Usa as mensagens e códigos de saída originais para facilitar suporte
+- ✅ Pode ser executado isoladamente ou via opção 4 do `installer.sh`
 
 ---
 

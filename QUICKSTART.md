@@ -48,8 +48,9 @@ nano config/settings.conf
 
 # Altere pelo menos:
 ZABBIX_PROXY_SERVER="SEU_IP_ZABBIX"
-KASPERSKY_FILE_SERVER="SEU_IP_FILE_SERVER"
 ```
+
+> Para instalar o Sophos, mantenha o arquivo `SophosSetup.sh` no diretório raiz e, se necessário, passe argumentos diretamente ao script (ex.: `sudo ./SophosSetup.sh --group="Servidor/Linux"`).
 
 ## 📖 Menu Principal
 
@@ -62,11 +63,12 @@ Ao executar `sudo ./installer.sh`, você verá:
 
 1) Instalar Zabbix Agent
 2) Configurar Hostname
-3) Instalar Kaspersky
-4) Registrar no Domínio
-5) Executar Tudo (Modo Completo)
-6) Configurações
-7) Ver Logs
+3) Instalar Wazuh Agent
+4) Instalar Sophos
+5) Registrar no Domínio
+6) Executar Tudo (Modo Completo)
+7) Configurações
+8) Ver Logs
 0) Sair
 ```
 

@@ -75,8 +75,8 @@ show_main_menu() {
     echo -e "  ${COLOR_GREEN}3${COLOR_RESET}) ${COLOR_CYAN}Instalar Wazuh Agent${COLOR_RESET}"
     echo -e "     Instala e configura o agente Wazuh"
     echo ""
-    echo -e "  ${COLOR_GREEN}4${COLOR_RESET}) ${COLOR_CYAN}Instalar Kaspersky${COLOR_RESET}"
-    echo -e "     Instala Kaspersky Endpoint Security"
+    echo -e "  ${COLOR_GREEN}4${COLOR_RESET}) ${COLOR_CYAN}Instalar Sophos${COLOR_RESET}"
+    echo -e "     Executa o instalador oficial da Sophos"
     echo ""
     echo -e "  ${COLOR_GREEN}5${COLOR_RESET}) ${COLOR_CYAN}Registrar no Domínio${COLOR_RESET}"
     echo -e "     Integra o sistema ao domínio via SSSD/Realmd"
@@ -137,14 +137,14 @@ run_wazuh_install() {
     pause_for_user
 }
 
-# Executar instalação do Kaspersky
-run_kaspersky_install() {
-    print_header "Instalação do Kaspersky"
+# Executar instalação do Sophos
+run_sophos_install() {
+    print_header "Instalação do Sophos"
     
-    if [ -f "$SCRIPT_DIR/KASPERSKY.sh" ]; then
-        bash "$SCRIPT_DIR/KASPERSKY.sh"
+    if [ -f "$SCRIPT_DIR/SophosSetup.sh" ]; then
+        bash "$SCRIPT_DIR/SophosSetup.sh"
     else
-        print_error "Script KASPERSKY.sh não encontrado"
+        print_error "Script SophosSetup.sh não encontrado"
         return 1
     fi
     
@@ -173,7 +173,7 @@ run_full_installation() {
     echo "  1. Configuração de Hostname"
     echo "  2. Instalação do Zabbix Agent"
     echo "  3. Instalação do Wazuh Agent"
-    echo "  4. Instalação do Kaspersky"
+    echo "  4. Instalação do Sophos"
     echo "  5. Registro no Domínio"
     echo ""
     
@@ -221,21 +221,21 @@ run_full_installation() {
         fi
     fi
     
-    # 4. Kaspersky
+    # 4. Sophos
     print_separator
-    print_info "Passo 4/5: Instalação do Kaspersky"
-    if prompt_confirm "Deseja instalar o Kaspersky?"; then
-        if [ -f "$SCRIPT_DIR/KASPERSKY.sh" ]; then
-            bash "$SCRIPT_DIR/KASPERSKY.sh"
+    print_info "Passo 4/5: Instalação do Sophos"
+    if prompt_confirm "Deseja instalar o Sophos?"; then
+        if [ -f "$SCRIPT_DIR/SophosSetup.sh" ]; then
+            bash "$SCRIPT_DIR/SophosSetup.sh"
             if [ $? -eq 0 ]; then
-                print_success "Kaspersky instalado"
+                print_success "Sophos instalado"
             else
-                print_error "Falha na instalação do Kaspersky"
+                print_error "Falha na instalação do Sophos"
                 failed=$((failed + 1))
             fi
         fi
     else
-        print_info "Instalação do Kaspersky pulada"
+        print_info "Instalação do Sophos pulada"
     fi
     
     # 5. Domínio
@@ -392,7 +392,7 @@ process_menu_choice() {
             run_wazuh_install
             ;;
         4)
-            run_kaspersky_install
+            run_sophos_install
             ;;
         5)
             run_domain_register

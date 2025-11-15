@@ -44,6 +44,92 @@ get_required_packages() {
     esac
 }
 
+# Gerar fallback padrão e único para NetBIOS
+generate_fallback_netbios_name() {
+    local suffix=""
+    
+    if [ -r /etc/machine-id ]; then
+        suffix=$(tr '[:lower:]' '[:upper:]' < /etc/machine-id | tr -cd 'A-Z0-9' | cut -c1-7)
+    fi
+    
+    if [ -z "$suffix" ]; then
+        local ts=$(date +%s 2>/dev/null || echo $$)
+        suffix=$(printf "%05d" $((ts % 100000)))
+    fi
+    
+    local fallback="LINUX${suffix}"
+    fallback=$(echo "$fallback" | tr -cd 'A-Z0-9')
+    fallback=$(echo "$fallback" | cut -c1-15)
+    
+    if [ -z "$fallback" ]; then
+        fallback="LINUXHOST"
+    fi
+    
+    echo "$fallback"
+}
+
+# Gerar nome de computador compatível com NetBIOS (max 15 caracteres)
+generate_computer_name() {
+    local base_name
+    
+    if [ -n "$DOMAIN_COMPUTER_NAME" ]; then
+        base_name="$DOMAIN_COMPUTER_NAME"
+        print_info "Usando nome do computador definido em configuração: $base_name"
+        log_info "Nome de computador sobrescrito via configuração: $base_name"
+    else
+        base_name=$(hostname -s 2>/dev/null || hostname)
+    fi
+    
+    local sanitized
+    sanitized=$(echo "$base_name" | tr '[:lower:]' '[:upper:]')
+    
+    local sanitized_chars
+    sanitized_chars=$(echo "$sanitized" | tr -cd 'A-Z0-9-')
+    if [ "$sanitized_chars" != "$sanitized" ]; then
+        print_warning "Nome '$base_name' contém caracteres não suportados. Será usado '$sanitized_chars' após limpeza."
+        log_warning "Nome '$base_name' teve caracteres inválidos removidos. Resultado: $sanitized_chars"
+    fi
+    sanitized="$sanitized_chars"
+    
+    local sanitized_trimmed
+    sanitized_trimmed=$(echo "$sanitized" | sed 's/^-*//; s/-*$//')
+    if [ "$sanitized_trimmed" != "$sanitized" ]; then
+        print_warning "Nome '$base_name' possui hífens inválidos no início/fim. Será usado '$sanitized_trimmed'."
+        log_warning "Nome '$base_name' teve hífens nas bordas removidos. Resultado: $sanitized_trimmed"
+    fi
+    sanitized="$sanitized_trimmed"
+    
+    if [ -z "$sanitized" ]; then
+        sanitized=$(generate_fallback_netbios_name)
+        print_warning "Hostname atual contém caracteres incompatíveis. Usando padrão '$sanitized'."
+        log_warning "Hostname inválido detectado, usando fallback $sanitized"
+    fi
+    
+    if [ "${#sanitized}" -gt 15 ]; then
+        local truncated="${sanitized:0:15}"
+        truncated=$(echo "$truncated" | sed 's/^-*//; s/-*$//')
+        
+        if [ -z "$truncated" ]; then
+            truncated=$(echo "$sanitized" | tr -d '-' | cut -c1-15)
+        fi
+        
+        if [ -z "$truncated" ]; then
+            truncated=$(generate_fallback_netbios_name)
+            print_warning "Não foi possível gerar nome válido após truncar. Usando '$truncated'."
+        fi
+        
+        print_warning "Hostname '$base_name' excede 15 caracteres. Será usado '$truncated' no domínio."
+        log_warning "Hostname excede 15 caracteres. Truncado para $truncated"
+        sanitized="$truncated"
+        
+        if [ -z "$DOMAIN_COMPUTER_NAME" ]; then
+            print_info "Dica: execute ./hostname.sh para definir um nome curto permanente."
+        fi
+    fi
+    
+    echo "$sanitized"
+}
+
 # Instalar pacotes necessários
 install_domain_packages() {
     print_info "Instalando pacotes necessários para integração ao domínio..."
@@ -399,10 +485,11 @@ join_domain() {
         install_packages samba smbclient winbind
     fi
     
-    # Truncar hostname para limite NetBIOS (15 caracteres)
-    local HOSTNAME_SHORT=$(hostname | cut -c1-15 | tr '[:lower:]' '[:upper:]')
-    print_info "Nome NetBIOS: $HOSTNAME_SHORT (máx 15 caracteres)"
-    log_info "Nome NetBIOS truncado: $HOSTNAME_SHORT"
+    # Gerar nome compatível com NetBIOS (15 caracteres)
+    local HOSTNAME_SHORT
+    HOSTNAME_SHORT=$(generate_computer_name)
+    print_info "Nome NetBIOS utilizado: $HOSTNAME_SHORT"
+    log_info "Nome NetBIOS definido: $HOSTNAME_SHORT"
     
     # Configurar Samba
     print_info "Configurando Samba..."
@@ -648,10 +735,10 @@ EXPECTEOF
     
     # Método alternativo: realm join
     print_info "Tentando com 'realm join'..."
-    log_info "Executando: realm join --user=$user_format $DOMAIN"
+    log_info "Executando: realm join --computer-name=$HOSTNAME_SHORT --user=$user_format $DOMAIN"
     
     local realm_output=$(mktemp)
-    if realm join --user="$user_format" "$DOMAIN" --verbose < "$temp_pass_file" > "$realm_output" 2>&1; then
+    if realm join --computer-name="$HOSTNAME_SHORT" --user="$user_format" "$DOMAIN" --verbose < "$temp_pass_file" > "$realm_output" 2>&1; then
         cat "$realm_output" >> "$LOG_FILE"
         rm -f "$temp_pass_file" "$realm_output"
         print_success "✓ Computador registrado no domínio com sucesso"

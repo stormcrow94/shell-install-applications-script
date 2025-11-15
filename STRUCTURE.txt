@@ -5,7 +5,7 @@ shell-install-applications-script/
 │   ├── install_zabbix.sh         # Instalação Zabbix (unificado, detecta distro)
 │   ├── register_domain.sh        # Registro no domínio (unificado)
 │   ├── hostname.sh               # Configuração de hostname (melhorado)
-│   └── KASPERSKY.sh              # Instalação Kaspersky (melhorado)
+│   └── SophosSetup.sh            # Instalador oficial Sophos
 │
 ├── 📚 BIBLIOTECA E CONFIGURAÇÃO
 │   ├── lib/
@@ -49,7 +49,7 @@ RECOMENDAÇÕES:
 
 2. 📝 PERSONALIZE: nano config/settings.conf
    - IP do Zabbix
-   - Servidor de arquivos Kaspersky
+   - Credenciais de domínio
    - Configurações padrão
 
 3. 📊 VERIFIQUE LOGS: ls -lh logs/
@@ -77,7 +77,7 @@ Biblioteca e Scripts:
   installer.sh            13 KB  (menu principal)
   register_domain.sh      13 KB  (registro no domínio)
   install_zabbix.sh       11 KB  (instalação Zabbix)
-  KASPERSKY.sh             8 KB  (instalação Kaspersky)
+  SophosSetup.sh          19 MB  (instalação Sophos)
   hostname.sh              3 KB  (configuração hostname)
 
 Documentação:
