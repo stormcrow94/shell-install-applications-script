@@ -19,19 +19,28 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Checkout wiki repository
-        uses: actions/checkout@v4
-        with:
-          repository: ${{ github.repository }}.wiki
-          path: wiki
-          token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Prepare wiki repository
+        env:
+          WIKI_REMOTE: https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.wiki.git
+        run: |
+          rm -rf wiki
+          mkdir -p wiki
+          cd wiki
+          git init
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git remote add origin "$WIKI_REMOTE"
+          if git ls-remote origin &>/dev/null; then
+            git fetch origin
+            git checkout -B master origin/master || git checkout -B main origin/main || git checkout -B master
+          else
+            git checkout -B master
+          fi
 
       - name: Update wiki content
         run: |
           cp WIKI.md wiki/Home.md
           cd wiki
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
           if git diff --quiet && git diff --staged --quiet; then
             echo "No changes to publish."
             exit 0
@@ -42,5 +51,5 @@ jobs:
             exit 0
           fi
           git commit -m "docs: sync wiki from repository @ ${{ github.sha }}"
-          git push origin HEAD:main || git push origin HEAD:master || git push
+          git push origin HEAD:master || git push origin HEAD:main || git push
 
