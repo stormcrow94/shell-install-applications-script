@@ -867,6 +867,7 @@ EXPECTEOF
         fi
         AUTH_ATTEMPTS=$((AUTH_ATTEMPTS+1))
     fi
+    fi
     
     # Método alternativo: realm join (sem forçar sssd) 
     print_info "Tentando com 'realm join'..."
