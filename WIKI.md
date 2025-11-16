@@ -51,7 +51,7 @@ Coleção profissional de scripts em Bash para automatizar a instalação e conf
 shell-install-applications-script/
 ├── installer.sh                    # Menu principal (RECOMENDADO)
 ├── install_zabbix.sh               # Instalação do Zabbix (unificado)
-├── install_wazuh.sh                # Instalação do Wazuh (novo)
+├── install_wazuh.sh                # Instalação do Wazuh (unificado)
 ├── register_domain.sh              # Registro no domínio (unificado)
 ├── hostname.sh                     # Configuração de hostname
 ├── SophosSetup.sh                  # Instalador oficial da Sophos
@@ -60,7 +60,13 @@ shell-install-applications-script/
 ├── config/
 │   └── settings.conf               # Arquivo de configuração
 ├── logs/                           # Diretório de logs (gerado automaticamente)
-└── docs legados                    # Scripts antigos mantidos para compatibilidade
+├── README.md                       # Visão geral e uso rápido
+├── QUICKSTART.md                   # Guia rápido
+├── QUICKSTART_WAZUH.md             # Guia rápido específico do Wazuh
+├── WAZUH_IMPLEMENTATION.md         # Guia de implementação Wazuh
+├── DEBIAN_GUIDE.md                 # Guia para Debian
+├── EXAMPLES.md                     # Exemplos práticos
+└── STRUCTURE.txt                   # Estrutura e notas do projeto
 ```
 
 ---
@@ -128,7 +134,7 @@ ZABBIX_DEBUG_LEVEL="3"
 - Detecta distro e instala pacote DEB/RPM adequado
 - Configura `WAZUH_MANAGER`, habilita e verifica serviço
 
-Configurações:
+Configurações padrão (editáveis em `config/settings.conf`):
 
 ```bash
 WAZUH_MANAGER="wazuh.vantix.com.br"
@@ -159,14 +165,28 @@ Use `config/settings.conf` para personalizar o comportamento:
 
 | Variável | Descrição | Padrão |
 | --- | --- | --- |
-| `ZABBIX_PROXY_SERVER` | IP do servidor Zabbix | `10.130.3.201` |
+| `ZABBIX_PROXY_SERVER` | IP/hostname do servidor ou proxy Zabbix | `10.130.3.201` |
+| `ZABBIX_SERVER_PORT` | Porta do servidor Zabbix | `10051` |
+| `ZABBIX_AGENT_PORT` | Porta do agente Zabbix | `10050` |
+| `ZABBIX_DEBUG_LEVEL` | Nível de debug do Zabbix (0-5) | `3` |
+| `ZABBIX_LOG_SIZE` | Tamanho máximo do log (MB) | `10` |
+| `ZABBIX_VERSION_UBUNTU` | Versão Zabbix para Ubuntu | `7.0` |
+| `ZABBIX_VERSION_DEBIAN` | Versão Zabbix para Debian | `6.0` |
+| `ZABBIX_VERSION_RHEL` | Versão Zabbix para RHEL/Rocky/Alma | `6.4` |
 | `WAZUH_MANAGER` | Endereço do Wazuh Manager | `wazuh.vantix.com.br` |
 | `WAZUH_VERSION` | Versão do Wazuh Agent | `4.14.0` |
+| `WAZUH_REVISION` | Revisão do pacote do Wazuh | `1` |
 | `DEFAULT_DOMAIN` | Domínio padrão | vazio |
+| `DEFAULT_ADMIN_GROUP` | Grupo padrão (sudo/SSH) | vazio |
+| `DEFAULT_ADMIN_USER` | Usuário administrador padrão | vazio |
 | `DOMAIN_COMPUTER_NAME` | Nome NetBIOS (15 chars) | vazio |
+| `LOG_DIR` | Diretório dos logs | `./logs` |
 | `AUTO_BACKUP` | Backup automático | `true` |
+| `NETWORK_TIMEOUT` | Timeout para rede (s) | `30` |
 | `CHECK_INTERNET` | Verifica conectividade | `true` |
-| `VERBOSE_MODE` | Logs detalhados | `false` |
+| `EXECUTION_MODE` | Modo (`interactive`/`silent`) | `interactive` |
+| `CONTINUE_ON_WARNING` | Prosseguir em avisos | `true` |
+| `VERBOSE_MODE` | Exibir comandos (verbose) | `false` |
 
 > Para editar: `nano config/settings.conf` ou opção **Configurações** no menu.
 > O instalador `SophosSetup.sh` não usa variáveis dedicadas; personalize passando argumentos diretamente ao script conforme a documentação oficial.
@@ -228,7 +248,7 @@ Logs detalhados ajudam a identificar falhas; use `VERBOSE_MODE="true"` para depu
 ### Suporte e Contribuição
 
 1. Verifique os logs em `logs/`
-2. Consulte esta wiki e `SUMMARY.md`, `QUICKSTART.md`, `WAZUH_IMPLEMENTATION.md` para guias específicos
+2. Consulte esta wiki e os guias: `QUICKSTART.md`, `QUICKSTART_WAZUH.md`, `WAZUH_IMPLEMENTATION.md`, `DEBIAN_GUIDE.md`, `EXAMPLES.md`
 3. Abra uma issue com distribuição, comando executado e logs relevantes
 
 **Fluxo para contribuir**
