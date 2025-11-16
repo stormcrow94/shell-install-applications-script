@@ -30,6 +30,9 @@ fi
 # Preferência do cliente: SSSD por padrão
 : "${PREFER_SSSD:=true}"
 
+# Forçar reingresso limpo quando detectado estado inconsistente
+: "${FORCE_REJOIN_ON_INCONSISTENCY:=true}"
+
 # Obter lista de pacotes necessários baseado na distribuição
 get_required_packages() {
     local distro="$1"
@@ -230,6 +233,43 @@ check_domain_prerequisites() {
     fi
 }
 
+# Garantir krb5.conf mínimo válido para o domínio (substitui exemplos “MIT/Stanford”)
+ensure_krb5_conf() {
+    local krb="/etc/krb5.conf"
+    local realm_upper
+    realm_upper=$(echo "$DOMAIN" | tr '[:lower:]' '[:upper:]')
+
+    if [ ! -f "$krb" ]; then
+        print_info "Criando /etc/krb5.conf mínimo para o domínio..."
+    else
+        # Se contiver exemplos bem conhecidos, substitui
+        if grep -qiE "ATHENA\.MIT|stanford\.edu|UTORONTO\.CA|CS\.CMU\.EDU|DEMENTIA\.ORG" "$krb"; then
+            print_warning "Detectado krb5.conf de exemplo – será substituído por configuração do seu domínio"
+        else
+            # Já existe e não parece exemplo – mantém
+            return 0
+        fi
+    fi
+
+    backup_file "$krb" || true
+    cat > "$krb" <<EOF
+[libdefaults]
+  default_realm = ${realm_upper}
+  dns_lookup_kdc = true
+  dns_lookup_realm = true
+  rdns = false
+  ticket_lifetime = 24h
+  forwardable = true
+
+[domain_realm]
+  .${DOMAIN} = ${realm_upper}
+  ${DOMAIN} = ${realm_upper}
+EOF
+
+    print_success "krb5.conf ajustado para o domínio ${DOMAIN}"
+    return 0
+}
+
 # Coletar informações do domínio
 collect_domain_info() {
     print_header "Informações do Domínio"
@@ -427,6 +467,9 @@ join_domain() {
     print_info "Ingressando no domínio $DOMAIN..."
     log_info "Iniciando ingresso no domínio: $DOMAIN"
     
+    # Garantir krb5.conf válido antes de qualquer tentativa
+    ensure_krb5_conf || true
+
     # Verificar se o domínio é acessível primeiro
     print_info "Verificando descoberta do domínio..."
     if realm discover "$DOMAIN" >> "$LOG_FILE" 2>&1; then
@@ -792,6 +835,43 @@ EXPECTEOF
     # Se todos falharam
     print_error "✗ Falha ao ingressar no domínio"
     log_error "TODOS OS MÉTODOS FALHARAM (net ads join e realm join)"
+
+    # Tentativa automática de recuperação se estado inconsistente for detectado
+    if [ "${FORCE_REJOIN_ON_INCONSISTENCY}" = "true" ]; then
+        print_separator
+        print_info "Verificando inconsistências (realm diz join, mas sem keytab)..."
+        local realm_status="$(realm list 2>/dev/null || true)"
+        if echo "$realm_status" | grep -qi "configured:" && { [ ! -f /etc/krb5.keytab ] || [ ! -s /etc/krb5.keytab ]; }; then
+            print_warning "Inconsistência detectada: realm indica join, mas o keytab está ausente"
+            log_warning "Inconsistência de ingresso: configured sem /etc/krb5.keytab"
+
+            print_info "Executando limpeza automática e nova tentativa de join via SSSD..."
+            # Limpeza completa
+            systemctl stop sssd winbind >> "$LOG_FILE" 2>&1 || true
+            realm leave -v "$DOMAIN" >> "$LOG_FILE" 2>&1 || true
+            net ads leave -U "$user_format" >> "$LOG_FILE" 2>&1 || true
+            rm -f /etc/krb5.keytab >> "$LOG_FILE" 2>&1 || true
+            rm -rf /var/lib/sss/db/* /var/lib/sss/mc/* >> "$LOG_FILE" 2>&1 || true
+
+            # Reescrever krb5.conf mínimo
+            ensure_krb5_conf || true
+
+            # Nova tentativa com SSSD/adcli
+            local retry_out=$(mktemp)
+            if realm join --client-software=sssd --membership-software=adcli \
+                --computer-name="$HOSTNAME_SHORT" --user="$user_format" "$DOMAIN" --verbose < <(printf '%s\n' "$PASSWORD") > "$retry_out" 2>&1; then
+                cat "$retry_out" >> "$LOG_FILE"
+                rm -f "$retry_out"
+                print_success "✓ Ingresso corrigido após limpeza automática (SSSD/adcli)"
+                log_success "Auto-repair de ingresso bem-sucedido"
+                return 0
+            else
+                cat "$retry_out" >> "$LOG_FILE"
+                rm -f "$retry_out"
+                print_warning "Recuperação automática falhou; intervenção manual pode ser necessária"
+            fi
+        fi
+    fi
     
     print_separator
     print_warning "════════════════════════════════════════════"
