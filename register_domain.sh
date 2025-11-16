@@ -905,7 +905,8 @@ EXPECTEOF
         print_separator
         print_info "Verificando inconsistências (realm diz join, mas sem keytab)..."
         local realm_status="$(realm list 2>/dev/null || true)"
-        if echo "$realm_status" | grep -qi "configured:" && { [ ! -f /etc/krb5.keytab ] || [ ! -s /etc/krb5.keytab ]; }; then
+        if echo "$realm_status" | grep -qi "configured:"; then
+            if [ ! -s /etc/krb5.keytab ]; then
             print_warning "Inconsistência detectada: realm indica join, mas o keytab está ausente"
             log_warning "Inconsistência de ingresso: configured sem /etc/krb5.keytab"
 
@@ -922,17 +923,23 @@ EXPECTEOF
 
             # Nova tentativa com SSSD/adcli
             local retry_out=$(mktemp)
+            local retry_pass=$(mktemp)
+            chmod 600 "$retry_pass"
+            printf '%s\n' "$PASSWORD" > "$retry_pass"
             if realm join --client-software=sssd --membership-software=adcli \
-                --computer-name="$HOSTNAME_SHORT" --user="$user_format_upn" "$DOMAIN" --verbose < <(printf '%s\n' "$PASSWORD") > "$retry_out" 2>&1; then
+                --computer-name="$HOSTNAME_SHORT" --user="$user_format_upn" "$DOMAIN" --verbose < "$retry_pass" > "$retry_out" 2>&1; then
                 cat "$retry_out" >> "$LOG_FILE"
                 rm -f "$retry_out"
+                rm -f "$retry_pass"
                 print_success "✓ Ingresso corrigido após limpeza automática (SSSD/adcli)"
                 log_success "Auto-repair de ingresso bem-sucedido"
                 return 0
             else
                 cat "$retry_out" >> "$LOG_FILE"
                 rm -f "$retry_out"
+                rm -f "$retry_pass"
                 print_warning "Recuperação automática falhou; intervenção manual pode ser necessária"
+            fi
             fi
         fi
     fi
