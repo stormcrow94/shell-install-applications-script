@@ -27,6 +27,9 @@ fi
 # Funções Específicas de Domínio
 #==============================================================================
 
+# Preferência do cliente: SSSD por padrão
+: "${PREFER_SSSD:=true}"
+
 # Obter lista de pacotes necessários baseado na distribuição
 get_required_packages() {
     local distro="$1"
@@ -530,9 +533,34 @@ EOFSMB
     
     # Usar formato simples do username (net ads join geralmente aceita username simples)
     local user_format="$USERNAME"
-    
-    # Tentar ingresso com net ads join
-    print_info "Ingressando no domínio com 'net ads join'..."
+
+    # Caminho preferencial: SSSD/adcli via realmd
+    if [ "${PREFER_SSSD}" = "true" ]; then
+        print_info "Preferindo SSSD/adcli (realmd) para ingresso..."
+        log_info "Executando: realm join --client-software=sssd --membership-software=adcli --computer-name=$HOSTNAME_SHORT --user=$user_format $DOMAIN"
+        local realm_output_pref=$(mktemp)
+        if realm join --client-software=sssd --membership-software=adcli --computer-name="$HOSTNAME_SHORT" --user="$user_format" "$DOMAIN" --verbose < "$temp_pass_file" > "$realm_output_pref" 2>&1; then
+            cat "$realm_output_pref" >> "$LOG_FILE"
+            rm -f "$temp_pass_file" "$realm_output_pref"
+            print_success "✓ Computador registrado no domínio com SSSD"
+            log_success "Ingresso no domínio realizado (realm join sssd/adcli)"
+            return 0
+        else
+            cat "$realm_output_pref" >> "$LOG_FILE"
+            if grep -qi "Already joined to this domain" "$realm_output_pref"; then
+                print_warning "realm join (sssd) reportou: Already joined to this domain"
+                log_info "Host já estava no domínio (sssd), tratando como sucesso"
+                rm -f "$temp_pass_file" "$realm_output_pref"
+                return 0
+            fi
+            print_warning "realm join (sssd/adcli) falhou, tentando método alternativo com samba/winbind..."
+            log_warning "realm join sssd/adcli falhou; fallback para net ads join"
+            rm -f "$realm_output_pref"
+        fi
+    fi
+
+    # Fallback: Tentar ingresso com net ads join (winbind)
+    print_info "Ingressando no domínio com 'net ads join' (fallback)..."
     log_info "Executando: net ads join -U $user_format -S $DOMAIN"
     
     if command -v expect > /dev/null 2>&1; then
@@ -733,7 +761,7 @@ EXPECTEOF
         fi
     fi
     
-    # Método alternativo: realm join
+    # Método alternativo: realm join (sem forçar sssd) 
     print_info "Tentando com 'realm join'..."
     log_info "Executando: realm join --computer-name=$HOSTNAME_SHORT --user=$user_format $DOMAIN"
     
@@ -746,6 +774,13 @@ EXPECTEOF
         return 0
     else
         cat "$realm_output" >> "$LOG_FILE"
+        # Tratar caso já ingressado como SUCESSO
+        if grep -qi "Already joined to this domain" "$realm_output"; then
+            print_warning "realm join reportou: Already joined to this domain"
+            log_info "Host já estava no domínio, tratando como sucesso"
+            rm -f "$temp_pass_file" "$realm_output"
+            return 0
+        fi
         print_error "realm join também falhou"
         log_error "realm join falhou, saída:"
         cat "$realm_output" >> "$LOG_FILE"
@@ -870,7 +905,7 @@ ldap_id_mapping = True
 use_fully_qualified_names = False
 fallback_homedir = /home/%u
 access_provider = simple
-simple_allow_groups = $ADMIN_GROUP
+simple_allow_groups = "$ADMIN_GROUP"
 EOFSSSD
         
         chmod 600 "$sssd_conf"
@@ -918,7 +953,7 @@ ldap_id_mapping = True
 use_fully_qualified_names = False
 fallback_homedir = /home/%u
 access_provider = simple
-simple_allow_groups = $ADMIN_GROUP
+simple_allow_groups = "$ADMIN_GROUP"
 EOFSSSD
         print_success "Seção do domínio criada"
     else
@@ -946,11 +981,11 @@ EOFSSSD
             sed -i "/\[domain\/$DOMAIN\]/a access_provider = simple" "$sssd_conf"
         fi
         
-        # Adicionar grupo ao acesso
+        # Adicionar grupo ao acesso (entre aspas para suportar nomes com espaços/hífens)
         if ! grep -q "simple_allow_groups" "$sssd_conf"; then
-            sed -i "/access_provider = simple/a simple_allow_groups = $ADMIN_GROUP" "$sssd_conf"
+            sed -i "/access_provider = simple/a simple_allow_groups = \"$ADMIN_GROUP\"" "$sssd_conf"
         else
-            sed -i "s/simple_allow_groups = .*/simple_allow_groups = $ADMIN_GROUP/" "$sssd_conf"
+            sed -i "s|^simple_allow_groups = .*|simple_allow_groups = \"$ADMIN_GROUP\"|" "$sssd_conf"
         fi
     fi
     
@@ -981,6 +1016,8 @@ configure_sudoers() {
     
     print_info "Configurando permissões sudo para o grupo $ADMIN_GROUP..."
     log_info "Configurando sudoers para grupo: $ADMIN_GROUP"
+    # Escapar espaços para sintaxe do sudoers (Domain\\ Admins)
+    local ADMIN_GROUP_SUDO="${ADMIN_GROUP// /\\ }"
     
     # Criar diretório se não existir
     mkdir -p "$sudoers_dir"
@@ -988,7 +1025,7 @@ configure_sudoers() {
     # Criar arquivo sudoers
     echo "# Permissões sudo para grupo do domínio" > "$sudoers_file"
     echo "# Gerado automaticamente em $(date)" >> "$sudoers_file"
-    echo "%$ADMIN_GROUP ALL=(ALL) ALL" >> "$sudoers_file"
+    echo "%$ADMIN_GROUP_SUDO ALL=(ALL) ALL" >> "$sudoers_file"
     
     # Ajustar permissões
     chmod 440 "$sudoers_file"
@@ -1002,6 +1039,52 @@ configure_sudoers() {
         print_error "Erro na sintaxe do arquivo sudoers"
         log_error "Erro de sintaxe no arquivo sudoers"
         rm -f "$sudoers_file"
+        return 1
+    fi
+}
+
+# Configurar nsswitch para SSSD
+configure_nsswitch_sss() {
+    local nss="/etc/nsswitch.conf"
+    if [ ! -f "$nss" ]; then
+        print_warning "Arquivo $nss não encontrado; pulando ajuste do NSS"
+        return 0
+    fi
+
+    print_info "Ajustando $nss para usar SSSD..."
+    backup_file "$nss"
+
+    # Garantir 'sss' em passwd, group e shadow, preservando ordem razoável
+    if grep -q "^passwd:" "$nss"; then
+        sed -i 's/^passwd:.*/passwd:         files systemd sss/' "$nss"
+    else
+        echo "passwd:         files systemd sss" >> "$nss"
+    fi
+
+    if grep -q "^group:" "$nss"; then
+        sed -i 's/^group:.*/group:          files systemd sss/' "$nss"
+    else
+        echo "group:          files systemd sss" >> "$nss"
+    fi
+
+    if grep -q "^shadow:" "$nss"; then
+        sed -i 's/^shadow:.*/shadow:         files sss/' "$nss"
+    else
+        echo "shadow:         files sss" >> "$nss"
+    fi
+
+    print_success "nsswitch.conf ajustado para SSSD"
+    return 0
+}
+
+# Configurar política do realmd (permit) para refletir no 'realm list'
+configure_realm_permit() {
+    print_info "Aplicando política de login no realmd (realm permit) para grupo: $ADMIN_GROUP"
+    if realm permit -g "$ADMIN_GROUP" >> "$LOG_FILE" 2>&1; then
+        print_success "Grupo permitido no realmd: $ADMIN_GROUP"
+        return 0
+    else
+        print_warning "Falha ao aplicar 'realm permit -g $ADMIN_GROUP' (continuando com SSSD)"
         return 1
     fi
 }
@@ -1045,6 +1128,14 @@ restart_domain_services() {
     # Parar SSSD antes de limpar cache
     print_info "Parando SSSD..."
     systemctl stop sssd >> "$LOG_FILE" 2>&1
+
+    # Se preferimos SSSD, garantir que winbind não interfira
+    if [ "${PREFER_SSSD}" = "true" ]; then
+        if systemctl list-unit-files | grep -q "winbind"; then
+            print_info "Desabilitando winbind (preferindo SSSD)..."
+            systemctl disable --now winbind >> "$LOG_FILE" 2>&1 || true
+        fi
+    fi
     
     # Limpar cache do SSSD (importante para evitar problemas)
     print_info "Limpando cache do SSSD..."
@@ -1368,12 +1459,20 @@ main() {
         exit 1
     fi
     
+    # Ajustar nsswitch para SSSD quando preferido
+    if [ "${PREFER_SSSD}" = "true" ]; then
+        configure_nsswitch_sss || true
+    fi
+    
     print_separator
     
     # Configurar sudoers
     if ! configure_sudoers; then
         print_warning "Falha ao configurar sudo, você precisará configurar manualmente"
     fi
+    
+    # Aplicar política 'realm permit' para o grupo aparecer no 'realm list'
+    configure_realm_permit || true
     
     # Configurar PAM
     if ! configure_pam; then
