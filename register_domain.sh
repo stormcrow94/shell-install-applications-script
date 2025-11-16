@@ -30,7 +30,7 @@ fi
 # Preferência do cliente: SSSD por padrão
 : "${PREFER_SSSD:=true}"
 
-# Forçar reingresso limpo quando detectado estado inconsistente
+# Habilitar recuperação automática de join inconsistente (quando realm diz joined mas sem keytab)
 : "${FORCE_REJOIN_ON_INCONSISTENCY:=true}"
 
 # Limite de tentativas de autenticação para evitar bloqueio
@@ -264,6 +264,9 @@ ensure_krb5_conf() {
   rdns = false
   ticket_lifetime = 24h
   forwardable = true
+  default_tgs_enctypes = aes256-cts-hmac-sha1-96 aes128-cts-hmac-sha1-96 rc4-hmac
+  default_tkt_enctypes = aes256-cts-hmac-sha1-96 aes128-cts-hmac-sha1-96 rc4-hmac
+  permitted_enctypes = aes256-cts-hmac-sha1-96 aes128-cts-hmac-sha1-96 rc4-hmac
 
 [domain_realm]
   .${DOMAIN} = ${realm_upper}
