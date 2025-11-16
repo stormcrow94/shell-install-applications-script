@@ -870,10 +870,10 @@ EXPECTEOF
     
     # Método alternativo: realm join (sem forçar sssd) 
     print_info "Tentando com 'realm join'..."
-    log_info "Executando: realm join --computer-name=$HOSTNAME_SHORT --user=$user_format $DOMAIN"
+    log_info "Executando: realm join --computer-name=$HOSTNAME_SHORT --user=$user_format_sam $DOMAIN"
     
     local realm_output=$(mktemp)
-    if realm join --computer-name="$HOSTNAME_SHORT" --user="$user_format" "$DOMAIN" --verbose < "$temp_pass_file" > "$realm_output" 2>&1; then
+    if realm join --computer-name="$HOSTNAME_SHORT" --user="$user_format_sam" "$DOMAIN" --verbose < "$temp_pass_file" > "$realm_output" 2>&1; then
         cat "$realm_output" >> "$LOG_FILE"
         rm -f "$temp_pass_file" "$realm_output"
         print_success "✓ Computador registrado no domínio com sucesso"
@@ -913,7 +913,7 @@ EXPECTEOF
             # Limpeza completa
             systemctl stop sssd winbind >> "$LOG_FILE" 2>&1 || true
             realm leave -v "$DOMAIN" >> "$LOG_FILE" 2>&1 || true
-            net ads leave -U "$user_format" >> "$LOG_FILE" 2>&1 || true
+            net ads leave -U "$user_format_dom" >> "$LOG_FILE" 2>&1 || true
             rm -f /etc/krb5.keytab >> "$LOG_FILE" 2>&1 || true
             rm -rf /var/lib/sss/db/* /var/lib/sss/mc/* >> "$LOG_FILE" 2>&1 || true
 
@@ -923,7 +923,7 @@ EXPECTEOF
             # Nova tentativa com SSSD/adcli
             local retry_out=$(mktemp)
             if realm join --client-software=sssd --membership-software=adcli \
-                --computer-name="$HOSTNAME_SHORT" --user="$user_format" "$DOMAIN" --verbose < <(printf '%s\n' "$PASSWORD") > "$retry_out" 2>&1; then
+                --computer-name="$HOSTNAME_SHORT" --user="$user_format_upn" "$DOMAIN" --verbose < <(printf '%s\n' "$PASSWORD") > "$retry_out" 2>&1; then
                 cat "$retry_out" >> "$LOG_FILE"
                 rm -f "$retry_out"
                 print_success "✓ Ingresso corrigido após limpeza automática (SSSD/adcli)"
