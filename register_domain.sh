@@ -33,6 +33,10 @@ fi
 # Forçar reingresso limpo quando detectado estado inconsistente
 : "${FORCE_REJOIN_ON_INCONSISTENCY:=true}"
 
+# Limite de tentativas de autenticação para evitar bloqueio
+: "${MAX_AUTH_ATTEMPTS:=2}"
+AUTH_ATTEMPTS=0
+
 # Obter lista de pacotes necessários baseado na distribuição
 get_required_packages() {
     local distro="$1"
@@ -284,25 +288,51 @@ collect_domain_info() {
     validate_not_empty "$DOMAIN" "Domínio" || return 1
     log_info "Domínio informado: $DOMAIN"
     
-    # Usuário
+    # Usuário (aceita UPN, samAccountName ou DOMAIN\\user)
     if [ -n "$DEFAULT_ADMIN_USER" ]; then
-        USERNAME=$(prompt_user "Digite o usuário administrador" "$DEFAULT_ADMIN_USER")
+        USERNAME=$(prompt_user "Digite somente o nome do usuário administrador (ex.: fortigate)" "$DEFAULT_ADMIN_USER")
     else
-        USERNAME=$(prompt_user "Digite o usuário administrador do domínio (apenas o nome, sem @dominio)")
+        USERNAME=$(prompt_user "Digite somente o nome do usuário administrador (sem domínio, ex.: fortigate)")
     fi
     
     validate_not_empty "$USERNAME" "Usuário" || return 1
     
-    # Normalizar usuário - remover domínio se foi incluído
-    if [[ "$USERNAME" == *"@"* ]]; then
-        print_warning "Detectado '@' no nome de usuário. Extraindo apenas o nome..."
-        # Extrair apenas a parte antes do @
-        USERNAME="${USERNAME%%@*}"
-        print_info "Usando nome de usuário: $USERNAME"
-        log_info "Nome de usuário normalizado: $USERNAME"
+    # Manter entrada original e derivar formatos úteis
+    # Exibir prefixo de domínio sugerido para clareza
+    local short_dom_upper=$(echo "${DOMAIN%%.*}" | tr '[:lower:]' '[:upper:]')
+    print_info "Você pode autenticar como: ${short_dom_upper}\\${USERNAME} ou ${USERNAME}@$(echo "$DOMAIN" | tr '[:lower:]' '[:upper:]')"
+
+    USERNAME_ORIG="$USERNAME"
+    USER_SAM="$USERNAME_ORIG"
+    USER_UPN="$USERNAME_ORIG"
+    USER_DOM_SAM="$USERNAME_ORIG"
+    
+    local realm_upper=$(echo "$DOMAIN" | tr '[:lower:]' '[:upper:]')
+    
+    # Se veio como UPN (user@domain), derive user e DOMAIN\\user
+    if [[ "$USERNAME_ORIG" == *"@"* ]]; then
+        USER_SAM="${USERNAME_ORIG%%@*}"
+        USER_UPN="$USERNAME_ORIG"
+        USER_DOM_SAM="${short_dom_upper}\\${USER_SAM}"
+        print_info "Usando UPN informado: $USER_UPN"
+        log_info "Derivado SAM: $USER_SAM e DOMAIN\\user: $USER_DOM_SAM"
+    # Se veio como DOMAIN\\user
+    elif [[ "$USERNAME_ORIG" == *"\\"* ]]; then
+        USER_DOM_SAM="$USERNAME_ORIG"
+        USER_SAM="${USERNAME_ORIG##*\\}"
+        USER_UPN="${USER_SAM}@${realm_upper}"
+        print_info "Usando DOMAIN\\user informado: $USER_DOM_SAM"
+        log_info "Derivado UPN: $USER_UPN e SAM: $USER_SAM"
+    else
+        # Apenas samAccountName
+        USER_SAM="$USERNAME_ORIG"
+        USER_UPN="${USER_SAM}@${realm_upper}"
+        USER_DOM_SAM="${short_dom_upper}\\${USER_SAM}"
+        print_info "Usando SAM informado: $USER_SAM"
+        log_info "Derivado UPN: $USER_UPN e DOMAIN\\user: $USER_DOM_SAM"
     fi
     
-    log_info "Usuário informado: $USERNAME"
+    log_info "Usuário informado (orig): $USERNAME_ORIG"
     
     # Senha
     PASSWORD=$(prompt_password "Digite a senha do usuário $USERNAME")
@@ -574,37 +604,70 @@ EOFSMB
     chmod 600 "$temp_pass_file"
     printf '%s\n' "$PASSWORD" > "$temp_pass_file"
     
-    # Usar formato simples do username (net ads join geralmente aceita username simples)
-    local user_format="$USERNAME"
+    # Preparar formatos de usuário
+    local user_format_sam="$USER_SAM"
+    local user_format_upn="$USER_UPN"
+    local user_format_dom="$USER_DOM_SAM"
 
     # Caminho preferencial: SSSD/adcli via realmd
     if [ "${PREFER_SSSD}" = "true" ]; then
         print_info "Preferindo SSSD/adcli (realmd) para ingresso..."
-        log_info "Executando: realm join --client-software=sssd --membership-software=adcli --computer-name=$HOSTNAME_SHORT --user=$user_format $DOMAIN"
         local realm_output_pref=$(mktemp)
-        if realm join --client-software=sssd --membership-software=adcli --computer-name="$HOSTNAME_SHORT" --user="$user_format" "$DOMAIN" --verbose < "$temp_pass_file" > "$realm_output_pref" 2>&1; then
+        # Tentar com UPN primeiro, depois SAM
+        log_info "Tentando: realm join (UPN)"
+        if [ $AUTH_ATTEMPTS -lt $MAX_AUTH_ATTEMPTS ] && realm join --client-software=sssd --membership-software=adcli --computer-name="$HOSTNAME_SHORT" --user="$user_format_upn" "$DOMAIN" --verbose < "$temp_pass_file" > "$realm_output_pref" 2>&1; then
             cat "$realm_output_pref" >> "$LOG_FILE"
             rm -f "$temp_pass_file" "$realm_output_pref"
             print_success "✓ Computador registrado no domínio com SSSD"
             log_success "Ingresso no domínio realizado (realm join sssd/adcli)"
             return 0
         else
+            AUTH_ATTEMPTS=$((AUTH_ATTEMPTS+1))
             cat "$realm_output_pref" >> "$LOG_FILE"
             if grep -qi "Already joined to this domain" "$realm_output_pref"; then
                 print_warning "realm join (sssd) reportou: Already joined to this domain"
-                log_info "Host já estava no domínio (sssd), tratando como sucesso"
-                rm -f "$temp_pass_file" "$realm_output_pref"
-                return 0
+                # Só tratar como sucesso se keytab existir; caso contrário, seguirá limpeza mais adiante
+                if [ -s /etc/krb5.keytab ]; then
+                    log_info "Keytab existe – tratando como sucesso"
+                    rm -f "$temp_pass_file" "$realm_output_pref"
+                    return 0
+                else
+                    log_warning "Sem keytab – não trataremos como sucesso; continuando fluxo"
+                fi
             fi
-            print_warning "realm join (sssd/adcli) falhou, tentando método alternativo com samba/winbind..."
-            log_warning "realm join sssd/adcli falhou; fallback para net ads join"
-            rm -f "$realm_output_pref"
+            log_info "Tentando: realm join (SAM)"
+            if [ $AUTH_ATTEMPTS -lt $MAX_AUTH_ATTEMPTS ] && realm join --client-software=sssd --membership-software=adcli --computer-name="$HOSTNAME_SHORT" --user="$user_format_sam" "$DOMAIN" --verbose < "$temp_pass_file" > "$realm_output_pref" 2>&1; then
+                cat "$realm_output_pref" >> "$LOG_FILE"
+                rm -f "$temp_pass_file" "$realm_output_pref"
+                print_success "✓ Computador registrado no domínio com SSSD (SAM)"
+                log_success "Ingresso no domínio realizado (realm join sssd/adcli SAM)"
+                return 0
+            else
+                AUTH_ATTEMPTS=$((AUTH_ATTEMPTS+1))
+                cat "$realm_output_pref" >> "$LOG_FILE"
+                if grep -qi "Already joined to this domain" "$realm_output_pref"; then
+                    print_warning "realm join (sssd SAM) reportou: Already joined to this domain"
+                    if [ -s /etc/krb5.keytab ]; then
+                        log_info "Keytab existe – tratando como sucesso"
+                        rm -f "$temp_pass_file" "$realm_output_pref"
+                        return 0
+                    else
+                        log_warning "Sem keytab – não trataremos como sucesso; continuando fallback"
+                    fi
+                fi
+                print_warning "realm join (sssd/adcli) falhou, tentando método alternativo com samba/winbind..."
+                log_warning "realm join sssd/adcli falhou; fallback para net ads join"
+                rm -f "$realm_output_pref"
+            fi
         fi
     fi
 
     # Fallback: Tentar ingresso com net ads join (winbind)
-    print_info "Ingressando no domínio com 'net ads join' (fallback)..."
-    log_info "Executando: net ads join -U $user_format -S $DOMAIN"
+    if [ $AUTH_ATTEMPTS -ge $MAX_AUTH_ATTEMPTS ]; then
+        print_warning "Limite de tentativas de autenticação atingido ($MAX_AUTH_ATTEMPTS). Evitando bloqueio de conta; pulando net ads fallback."
+    else
+        print_info "Ingressando no domínio com 'net ads join' (fallback)..."
+        log_info "Executando: net ads join -U '$user_format_dom' (outras variações se necessário) -S $DOMAIN"
     
     if command -v expect > /dev/null 2>&1; then
         # Criar arquivo temporário para senha (mais seguro que passar como argumento)
@@ -740,7 +803,7 @@ EXPECTEOF
         local join_output=$(mktemp)
         local exit_code=0
         
-        expect "$expect_script" "$user_format" "$password_file" "$DOMAIN" > "$join_output" 2>&1 || exit_code=$?
+        expect "$expect_script" "$user_format_dom" "$password_file" "$DOMAIN" > "$join_output" 2>&1 || exit_code=$?
         
         # Limpar arquivo de senha imediatamente
         rm -f "$password_file"
@@ -788,7 +851,7 @@ EXPECTEOF
         log_warning "Expect indisponível - net ads join via stdin"
         
         local join_output=$(mktemp)
-        if printf '%s\n' "$PASSWORD" | net ads join -U "$user_format" --stdinpass -S "$DOMAIN" -d 3 > "$join_output" 2>&1; then
+        if printf '%s\n' "$PASSWORD" | net ads join -U "$user_format_dom" --stdinpass -S "$DOMAIN" -d 3 > "$join_output" 2>&1; then
             cat "$join_output" >> "$LOG_FILE"
             cat "$join_output"
             rm -f "$temp_pass_file" "$join_output"
@@ -802,6 +865,7 @@ EXPECTEOF
             log_warning "net ads join via stdin falhou"
             rm -f "$join_output"
         fi
+        AUTH_ATTEMPTS=$((AUTH_ATTEMPTS+1))
     fi
     
     # Método alternativo: realm join (sem forçar sssd) 
