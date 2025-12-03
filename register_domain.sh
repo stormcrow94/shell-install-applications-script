@@ -77,6 +77,10 @@ echo ""
 read -p "Digite o nome do usuário administrador (ex: fortigate): " username
 read -sp "Digite a senha: " password
 echo ""
+echo ""
+echo "NOTA: O grupo especificado abaixo terá permissões de SUDO."
+echo "      O acesso SSH pode ser configurado posteriormente."
+echo ""
 read -p "Digite o grupo para SSH e Sudo (ex: SUDOERS_COMMSHOP_PRD): " group
 
 echo ""
@@ -122,19 +126,46 @@ if [ $? -eq 0 ] || [ -f /etc/krb5.keytab ]; then
         sed -i "/\[domain\/${domain}\]/a fallback_homedir = /home/%u" "$sssd_conf"
     fi
     
-    # Access provider
-    sed -i 's/access_provider = ad/access_provider = simple/' "$sssd_conf"
-    sed -i 's/access_provider = AD/access_provider = simple/' "$sssd_conf"
+    # Access provider - Configuração mais flexível
+    echo ""
+    echo "Escolha o método de controle de acesso:"
+    echo "1) Permitir TODOS os usuários do domínio (recomendado para ambientes de desenvolvimento/teste)"
+    echo "2) Restringir acesso apenas ao grupo especificado (mais seguro para produção)"
+    echo ""
+    read -p "Escolha [1-2] (padrão: 1): " access_choice
+    access_choice=${access_choice:-1}
     
-    if ! grep -q "access_provider" "$sssd_conf"; then
-        sed -i "/\[domain\/${domain}\]/a access_provider = simple" "$sssd_conf"
-    fi
-    
-    # Grupo permitido
-    if grep -q "simple_allow_groups" "$sssd_conf"; then
-        sed -i "s|^simple_allow_groups = .*|simple_allow_groups = \"${group}\"|" "$sssd_conf"
+    if [ "$access_choice" = "2" ]; then
+        # Modo restrito - apenas grupo específico
+        echo "Modo RESTRITO: apenas usuários do grupo '$group' poderão fazer login"
+        
+        sed -i 's/access_provider = ad/access_provider = simple/' "$sssd_conf"
+        sed -i 's/access_provider = AD/access_provider = simple/' "$sssd_conf"
+        
+        if ! grep -q "access_provider" "$sssd_conf"; then
+            sed -i "/\[domain\/${domain}\]/a access_provider = simple" "$sssd_conf"
+        fi
+        
+        # Grupo permitido
+        if grep -q "simple_allow_groups" "$sssd_conf"; then
+            sed -i "s|^simple_allow_groups = .*|simple_allow_groups = \"${group}\"|" "$sssd_conf"
+        else
+            sed -i "/access_provider = simple/a simple_allow_groups = \"${group}\"" "$sssd_conf"
+        fi
     else
-        sed -i "/access_provider = simple/a simple_allow_groups = \"${group}\"" "$sssd_conf"
+        # Modo permissivo - todos os usuários do domínio
+        echo "Modo PERMISSIVO: todos os usuários do domínio poderão fazer login"
+        
+        # Usar access_provider = ad (usa as políticas do próprio AD)
+        sed -i 's/access_provider = simple/access_provider = ad/' "$sssd_conf"
+        sed -i 's/access_provider = Simple/access_provider = ad/' "$sssd_conf"
+        
+        if ! grep -q "access_provider" "$sssd_conf"; then
+            sed -i "/\[domain\/${domain}\]/a access_provider = ad" "$sssd_conf"
+        fi
+        
+        # Remover/comentar simple_allow_groups se existir
+        sed -i 's/^simple_allow_groups/#simple_allow_groups/' "$sssd_conf"
     fi
     
     chmod 600 "$sssd_conf"
@@ -179,11 +210,34 @@ if [ $? -eq 0 ] || [ -f /etc/krb5.keytab ]; then
     echo ""
     echo "Domínio: $domain"
     echo "Grupo com sudo: $group"
+    
+    if [ "$access_choice" = "2" ]; then
+        echo "Modo de acesso: RESTRITO (apenas grupo: $group)"
+        echo ""
+        echo "⚠️  IMPORTANTE: Apenas usuários do grupo '$group' podem fazer login via SSH!"
+        echo "   Se um usuário não conseguir fazer SSH, verifique se ele está no grupo correto."
+    else
+        echo "Modo de acesso: PERMISSIVO (todos os usuários do domínio)"
+        echo ""
+        echo "✓ Todos os usuários do domínio podem fazer login via SSH"
+    fi
+    
     echo ""
     echo "Para verificar:"
-    echo "  realm list"
-    echo "  id <usuario>"
-    echo "  getent passwd <usuario>"
+    echo "  realm list                    # Ver domínio registrado"
+    echo "  id <usuario>                  # Ver usuário e seus grupos"
+    echo "  getent passwd <usuario>       # Verificar resolução de nome"
+    echo "  ssh <usuario>@localhost       # Testar login SSH local"
+    echo ""
+    echo "Troubleshooting (se houver problemas de acesso SSH):"
+    echo "  sudo journalctl -u sssd -n 50                    # Ver logs do SSSD"
+    echo "  sudo tail -f /var/log/auth.log                   # Ver logs de autenticação"
+    echo "  sudo cat /etc/sssd/sssd.conf | grep access       # Ver configuração de acesso"
+    echo ""
+    echo "Se usuários válidos não conseguirem fazer SSH, considere:"
+    echo "  1. Verificar se o usuário está no grupo correto (se modo restrito)"
+    echo "  2. Reexecutar o script e escolher modo PERMISSIVO"
+    echo "  3. Ver documentação em: https://access.redhat.com/documentation/en-us/red_hat_enterprise_linux/8/html/configuring_authentication_and_authorization_in_rhel/managing-user-access_configuring-authentication-and-authorization-in-rhel"
     echo ""
 else
     echo ""
