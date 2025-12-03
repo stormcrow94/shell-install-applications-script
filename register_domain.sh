@@ -148,9 +148,9 @@ if [ $? -eq 0 ] || [ -f /etc/krb5.keytab ]; then
         
         # Grupo permitido
         if grep -q "simple_allow_groups" "$sssd_conf"; then
-            sed -i "s|^simple_allow_groups = .*|simple_allow_groups = \"${group}\"|" "$sssd_conf"
+            sed -i "s|^simple_allow_groups = .*|simple_allow_groups = ${group}|" "$sssd_conf"
         else
-            sed -i "/access_provider = simple/a simple_allow_groups = \"${group}\"" "$sssd_conf"
+            sed -i "/access_provider = simple/a simple_allow_groups = ${group}" "$sssd_conf"
         fi
     else
         # Modo permissivo - todos os usuários do domínio
