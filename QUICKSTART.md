@@ -112,9 +112,9 @@ ls -la lib/common.sh
 ## 📚 Mais Informações
 
 - 📖 **Documentação completa:** [README.md](README.md)
-- 🔄 **Guia de migração:** [MIGRATION.md](MIGRATION.md)
+- 🧭 **Documentação técnica:** [PROJECT_DOCUMENTATION.md](PROJECT_DOCUMENTATION.md)
 - 📚 **Exemplos práticos:** [EXAMPLES.md](EXAMPLES.md)
-- 📊 **Resumo de melhorias:** [SUMMARY.md](SUMMARY.md)
+- 📘 **Wiki do projeto:** [WIKI.md](WIKI.md)
 
 ## 💡 Dicas
 
