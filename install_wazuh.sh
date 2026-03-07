@@ -22,7 +22,7 @@ if [ -f "$SCRIPT_DIR/config/settings.conf" ]; then
     source "$SCRIPT_DIR/config/settings.conf"
 else
     print_warning "Arquivo de configuração não encontrado, usando valores padrão"
-    WAZUH_MANAGER="wazuh.vantix.com.br"
+    WAZUH_MANAGER="wazuh.example.com"
     WAZUH_VERSION="4.14.0"
     WAZUH_REVISION="1"
 fi

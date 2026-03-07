@@ -22,7 +22,7 @@ if [ -f "$SCRIPT_DIR/config/settings.conf" ]; then
     source "$SCRIPT_DIR/config/settings.conf"
 else
     print_warning "Arquivo de configuração não encontrado, usando valores padrão"
-    ZABBIX_PROXY_SERVER="10.130.3.201"
+    ZABBIX_PROXY_SERVER="zabbix.example.com"
     ZABBIX_SERVER_PORT="10051"
     ZABBIX_AGENT_PORT="10050"
     ZABBIX_DEBUG_LEVEL="3"
