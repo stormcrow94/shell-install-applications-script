@@ -4,6 +4,7 @@
 # Script de Registro no Domínio
 # Integra o sistema ao domínio via SSSD/Realmd
 # Versão simples e funcional
+# Inclui workarounds para Ubuntu 22.04 (branch fix/ubuntu-22.04-domain-register)
 #==============================================================================
 
 set -e
@@ -39,11 +40,29 @@ apt-get update -qq
 for package in "${packages[@]}"; do
     if ! dpkg -l | grep -q "^ii  $package"; then
         echo "Instalando $package..."
-        DEBIAN_FRONTEND=noninteractive apt-get install -y "$package"
+        if ! DEBIAN_FRONTEND=noninteractive apt-get install -y "$package"; then
+            # Ubuntu 22.04: deb-systemd-invoke pode falhar no postinst (bug init-system-helpers)
+            if dpkg -s "$package" 2>/dev/null | grep -q "Status: install ok installed"; then
+                if [ -f /etc/os-release ] && grep -q 'VERSION_ID="22' /etc/os-release 2>/dev/null; then
+                    echo "Aviso: $package instalado; falha conhecida do systemd no postinst (Ubuntu 22.04). Continuando..."
+                else
+                    echo "Aviso: instalação retornou erro mas o pacote está instalado. Continuando..."
+                fi
+            else
+                echo "Erro: falha ao instalar $package"
+                exit 1
+            fi
+        fi
     else
         echo "$package já está instalado."
     fi
 done
+
+# Garantir que sssd está habilitado (compensa postinst que pode ter falhado no Ubuntu 22.04)
+if dpkg -s sssd &>/dev/null; then
+    systemctl daemon-reload 2>/dev/null || true
+    systemctl enable sssd 2>/dev/null || true
+fi
 
 echo ""
 
@@ -85,7 +104,12 @@ read -p "Digite o grupo para SSH e Sudo (ex: SUDOERS_COMMSHOP_PRD): " group
 
 echo ""
 echo "Descobrindo o domínio..."
-realm discover "$domain"
+ad_server=""
+if ! realm discover "$domain" 2>&1; then
+    echo "Descoberta do domínio falhou (ex.: DNS/SRV ausentes). Continuando para realm join..."
+    echo "Se souber o FQDN de um controlador de domínio, pode informá-lo para tentar o join sem descoberta."
+    read -p "FQDN do controlador de domínio (ou Enter para usar apenas o domínio): " ad_server
+fi
 
 echo ""
 echo "Ingressando no domínio..."
@@ -94,8 +118,12 @@ realm leave 2>/dev/null || true
 systemctl stop sssd 2>/dev/null || true
 rm -rf /var/lib/sss/db/* /var/lib/sss/mc/* 2>/dev/null || true
 
-# Join simples
-echo "$password" | realm join --user="$username" "$domain" --verbose
+# Join: usar DC explícito se informado (contorna falha de descoberta), senão usar domínio
+if [ -n "$ad_server" ]; then
+    echo "$password" | realm join --user="$username" "$ad_server" --verbose
+else
+    echo "$password" | realm join --user="$username" "$domain" --verbose
+fi
 
 # Verificar se deu certo
 if [ $? -eq 0 ] || [ -f /etc/krb5.keytab ]; then
