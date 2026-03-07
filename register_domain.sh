@@ -49,7 +49,7 @@ echo ""
 
 # Configurar krb5.conf mínimo
 echo "Configurando Kerberos..."
-read -p "Digite o domínio (ex: center.local): " domain
+read -p "Digite o domínio (ex: corp.example.com): " domain
 
 realm_upper=$(echo "$domain" | tr '[:lower:]' '[:upper:]')
 
@@ -74,14 +74,14 @@ echo "Kerberos configurado."
 echo ""
 
 # Coletar informações
-read -p "Digite o nome do usuário administrador (ex: fortigate): " username
+read -p "Digite o nome do usuário administrador (ex: administrator): " username
 read -sp "Digite a senha: " password
 echo ""
 echo ""
 echo "NOTA: O grupo especificado abaixo terá permissões de SUDO."
 echo "      O acesso SSH pode ser configurado posteriormente."
 echo ""
-read -p "Digite o grupo para SSH e Sudo (ex: SUDOERS_COMMSHOP_PRD): " group
+read -p "Digite o grupo para SSH e Sudo (ex: linux-admins): " group
 
 echo ""
 echo "Descobrindo o domínio..."
