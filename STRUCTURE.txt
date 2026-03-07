@@ -1,109 +1,36 @@
 shell-install-applications-script/
-│
-├── 🎯 SCRIPTS PRINCIPAIS (Novos - v2.0)
-│   ├── installer.sh              # ⭐ Menu principal interativo (USE ESTE!)
-│   ├── install_zabbix.sh         # Instalação Zabbix (unificado, detecta distro)
-│   ├── register_domain.sh        # Registro no domínio (unificado)
-│   ├── hostname.sh               # Configuração de hostname (melhorado)
-│   └── SophosSetup.sh            # Instalador oficial Sophos
-│
-├── 📚 BIBLIOTECA E CONFIGURAÇÃO
-│   ├── lib/
-│   │   └── common.sh             # Funções compartilhadas (40+ funções)
-│   └── config/
-│       └── settings.conf         # Configurações centralizadas
-│
-├── 📝 LOGS
-│   └── logs/                     # Logs automáticos (gerados em runtime)
-│       └── installer_*.log       # Um arquivo por execução
-│
-├── 📖 DOCUMENTAÇÃO
-│   ├── README.md                 # Documentação principal completa
-│   ├── QUICKSTART.md             # Guia rápido de 5 minutos
-│   ├── MIGRATION.md              # Guia de migração v1→v2
-│   ├── EXAMPLES.md               # Exemplos práticos de uso
-│   ├── CHANGELOG.md              # Histórico de versões
-│   ├── SUMMARY.md                # Resumo de melhorias
-│   └── STRUCTURE.txt             # Este arquivo
-│
-├── 🗂️ SCRIPTS LEGADOS (v1.0 - Mantidos para compatibilidade)
-│   ├── instalador_linux.sh       # Menu antigo (use installer.sh)
-│   ├── menu_instalador.sh        # Menu alternativo antigo
-│   ├── instalacao-zabbix2.sh     # Zabbix RHEL/CentOS 7 (use install_zabbix.sh)
-│   ├── install_zabbix_rocky.sh   # Zabbix Rocky (use install_zabbix.sh)
-│   ├── install_zabbix_ubuntu.sh  # Zabbix Ubuntu (use install_zabbix.sh)
-│   ├── registrar_no_dominio.sh   # Domínio RHEL (use register_domain.sh)
-│   └── registrar_no_dominio_ubuntu.sh  # Domínio Ubuntu (use register_domain.sh)
-│
-└── 🔧 CONFIGURAÇÃO DO PROJETO
-    └── .gitignore                # Ignora logs, backups, credenciais
+|
+|-- installer.sh                 # Menu principal interativo
+|-- install_zabbix.sh            # Instala e configura Zabbix Agent
+|-- install_wazuh.sh             # Instala e configura Wazuh Agent
+|-- register_domain.sh           # Registro em dominio (Realmd/SSSD)
+|-- hostname.sh                  # Configuracao de hostname
+|-- SophosSetup.sh               # Instalador oficial Sophos
+|-- fix_ssh_access.sh            # Script auxiliar (arquivo atualmente vazio)
+|
+|-- lib/
+|   `-- common.sh                # Funcoes compartilhadas (logs, validacao, utilitarios)
+|
+|-- config/
+|   `-- settings.conf            # Configuracoes centralizadas do projeto
+|
+|-- logs/                        # Gerado em runtime pelos scripts
+|
+|-- README.md                    # Visao geral e uso rapido
+|-- PROJECT_DOCUMENTATION.md     # Documentacao tecnica consolidada
+|-- WIKI.md                      # Wiki do projeto
+|-- QUICKSTART.md                # Guia rapido
+|-- QUICKSTART_WAZUH.md          # Guia rapido Wazuh
+|-- WAZUH_IMPLEMENTATION.md      # Implementacao detalhada do Wazuh
+|-- DEBIAN_GUIDE.md              # Guia especifico para Debian
+|-- EXAMPLES.md                  # Exemplos praticos
+|-- STRUCTURE.txt                # Estrutura atual do repositorio
+|
+|-- .github/
+|   `-- workflows/
+|       `-- wiki-sync.yml
+|
+`-- .gitignore
 
-═══════════════════════════════════════════════════════════════════
-
-RECOMENDAÇÕES:
-
-1. ⭐ USE O MENU: sudo ./installer.sh
-   - Interface moderna e intuitiva
-   - Todas as opções em um lugar
-   - Visualizador de logs integrado
-
-2. 📝 PERSONALIZE: nano config/settings.conf
-   - IP do Zabbix
-   - Credenciais de domínio
-   - Configurações padrão
-
-3. 📊 VERIFIQUE LOGS: ls -lh logs/
-   - Logs automáticos de todas operações
-   - Útil para troubleshooting
-
-═══════════════════════════════════════════════════════════════════
-
-SCRIPTS UNIFICADOS:
-
-Antes (v1.0):                    Agora (v2.0):
-├── install_zabbix_ubuntu.sh     ├── install_zabbix.sh
-├── install_zabbix_rocky.sh      │   (detecta automaticamente a distro)
-└── instalacao-zabbix2.sh        │
-                                 ├── register_domain.sh
-├── registrar_no_dominio.sh      │   (funciona em todas as distros)
-└── registrar_no_dominio_ubuntu.sh
-
-═══════════════════════════════════════════════════════════════════
-
-TAMANHOS DOS ARQUIVOS:
-
-Biblioteca e Scripts:
-  lib/common.sh           14 KB  (40+ funções reutilizáveis)
-  installer.sh            13 KB  (menu principal)
-  register_domain.sh      13 KB  (registro no domínio)
-  install_zabbix.sh       11 KB  (instalação Zabbix)
-  SophosSetup.sh          19 MB  (instalação Sophos)
-  hostname.sh              3 KB  (configuração hostname)
-
-Documentação:
-  README.md               10 KB
-  EXAMPLES.md              8 KB
-  SUMMARY.md               7 KB
-  MIGRATION.md             6 KB
-  config/settings.conf     3 KB
-  CHANGELOG.md             2 KB
-  QUICKSTART.md            2 KB
-
-Total: ~100 KB (código + docs)
-
-═══════════════════════════════════════════════════════════════════
-
-FUNCIONALIDADES:
-
-✅ Detecção automática de distribuição Linux
-✅ Sistema de logging completo
-✅ Configuração centralizada
-✅ Validações robustas
-✅ Backups automáticos
-✅ Interface colorida
-✅ Tratamento de erros
-✅ Modo interativo e não-interativo
-✅ Documentação completa
-✅ Exemplos práticos
-
-═══════════════════════════════════════════════════════════════════
+Recomendacao principal:
+  sudo ./installer.sh
