@@ -103,7 +103,7 @@ install_zabbix_rhel_from_official_rpm() {
         systemctl reset-failed zabbix-agent >> "$LOG_FILE" 2>&1 || true
     fi
 
-    release_url="https://repo.zabbix.com/zabbix/${branch}/rhel/${rhel_major}/x86_64/zabbix-release-${branch}-1.el${rhel_major}.noarch.rpm"
+    release_url="https://repo.zabbix.com/zabbix/${branch}/rhel/${rhel_major}/x86_64/zabbix-release-latest.el${rhel_major}.noarch.rpm"
 
     print_info "Instalando zabbix-release..."
     $pkg_mgr remove -y zabbix-release >> "$LOG_FILE" 2>&1 || true
