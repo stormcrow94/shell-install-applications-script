@@ -43,6 +43,35 @@ get_zabbix_pid_file() {
     fi
 }
 
+# Remover pacote zabbix-agent do sistema de pacotes, se existir.
+# Sem isso, apt/dnf pode sobrescrever /usr/sbin/zabbix_agentd numa atualização futura.
+remove_zabbix_agent_package_if_installed() {
+    case "$DISTRO" in
+        ubuntu|debian)
+            if dpkg -l zabbix-agent 2>/dev/null | grep -q '^ii'; then
+                print_info "Removendo pacote zabbix-agent (migração ou atualização para binário estático)..."
+                log_info "Removendo pacote zabbix-agent (Debian/Ubuntu)"
+                apt-get remove -y zabbix-agent >> "$LOG_FILE" 2>&1 || {
+                    print_warning "Não foi possível remover o pacote zabbix-agent; o binário estático ainda será instalado"
+                    log_warning "apt-get remove zabbix-agent falhou"
+                }
+            fi
+            ;;
+        rhel|centos|rocky|almalinux)
+            if rpm -q zabbix-agent &>/dev/null; then
+                print_info "Removendo pacote zabbix-agent (migração ou atualização para binário estático)..."
+                log_info "Removendo pacote zabbix-agent (RHEL)"
+                local pkg_manager
+                pkg_manager=$(get_package_manager)
+                $pkg_manager remove -y zabbix-agent >> "$LOG_FILE" 2>&1 || {
+                    print_warning "Não foi possível remover o pacote zabbix-agent; o binário estático ainda será instalado"
+                    log_warning "dnf/yum remove zabbix-agent falhou"
+                }
+            fi
+            ;;
+    esac
+}
+
 # Baixar URL para arquivo (wget ou curl)
 download_zabbix_tarball() {
     local url="$1"
@@ -79,6 +108,8 @@ install_zabbix_static_binary() {
 
     print_info "Parando zabbix-agent se estiver em execução (atualização de binários)..."
     systemctl stop zabbix-agent >> "$LOG_FILE" 2>&1 || true
+
+    remove_zabbix_agent_package_if_installed
 
     if ! getent group zabbix &>/dev/null; then
         groupadd -r zabbix >> "$LOG_FILE" 2>&1 || groupadd --system zabbix >> "$LOG_FILE" 2>&1 || {
