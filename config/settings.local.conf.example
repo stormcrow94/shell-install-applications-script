@@ -1,6 +1,0 @@
-# Copie para:  cp config/settings.local.conf.example config/settings.local.conf
-# O arquivo settings.local.conf é ignorado pelo Git — use-o para IPs e hostnames reais da sua rede.
-#
-# Exemplos (descomente e ajuste):
-# ZABBIX_PROXY_SERVER="192.0.2.10"
-# WAZUH_MANAGER="wazuh.example.corp"
