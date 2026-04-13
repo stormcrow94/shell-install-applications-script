@@ -165,17 +165,20 @@ install_zabbix_static_binary() {
     rm -f "$tarball"
 
     print_info "Instalando unit systemd zabbix-agent..."
+    # Type=simple + -f: o agente estático em modo daemon fork confunde o systemd com Type=forking/PIDFile
+    # em vários RHEL; primeiro plano evita timeout/falha no systemctl start.
     cat > /etc/systemd/system/zabbix-agent.service <<EOF
 [Unit]
 Description=Zabbix Agent
 After=network.target
 
 [Service]
-Type=forking
-PIDFile=$pid_file
+Type=simple
+User=zabbix
+Group=zabbix
 Restart=on-failure
 KillMode=control-group
-ExecStart=/usr/sbin/zabbix_agentd -c /etc/zabbix/zabbix_agentd.conf
+ExecStart=/usr/sbin/zabbix_agentd -f -c /etc/zabbix/zabbix_agentd.conf
 ExecReload=/bin/kill -HUP \$MAINPID
 
 [Install]
@@ -324,12 +327,17 @@ install_zabbix_ubuntu() {
     configure_firewall
     
     # Reiniciar e habilitar serviço
-    restart_service "zabbix-agent"
-    enable_service "zabbix-agent"
+    if ! restart_service "zabbix-agent"; then
+        print_info "Diagnóstico: journalctl -u zabbix-agent -n 40 --no-pager (detalhes também em $LOG_FILE)"
+        return 1
+    fi
+    enable_service "zabbix-agent" || return 1
     
-    # Verificar status
     print_separator
-    check_service_status "zabbix-agent"
+    if ! check_service_status "zabbix-agent"; then
+        print_info "Diagnóstico: journalctl -u zabbix-agent -n 40 --no-pager"
+        return 1
+    fi
     
     return 0
 }
@@ -350,12 +358,17 @@ install_zabbix_debian() {
     configure_firewall
     
     # Reiniciar e habilitar serviço
-    restart_service "zabbix-agent"
-    enable_service "zabbix-agent"
+    if ! restart_service "zabbix-agent"; then
+        print_info "Diagnóstico: journalctl -u zabbix-agent -n 40 --no-pager (detalhes também em $LOG_FILE)"
+        return 1
+    fi
+    enable_service "zabbix-agent" || return 1
     
-    # Verificar status
     print_separator
-    check_service_status "zabbix-agent"
+    if ! check_service_status "zabbix-agent"; then
+        print_info "Diagnóstico: journalctl -u zabbix-agent -n 40 --no-pager"
+        return 1
+    fi
     
     return 0
 }
@@ -376,12 +389,17 @@ install_zabbix_rhel() {
     configure_firewall
     
     # Reiniciar e habilitar serviço
-    restart_service "zabbix-agent"
-    enable_service "zabbix-agent"
+    if ! restart_service "zabbix-agent"; then
+        print_info "Diagnóstico: journalctl -u zabbix-agent -n 40 --no-pager (detalhes também em $LOG_FILE)"
+        return 1
+    fi
+    enable_service "zabbix-agent" || return 1
     
-    # Verificar status
     print_separator
-    check_service_status "zabbix-agent"
+    if ! check_service_status "zabbix-agent"; then
+        print_info "Diagnóstico: journalctl -u zabbix-agent -n 40 --no-pager"
+        return 1
+    fi
     
     return 0
 }
