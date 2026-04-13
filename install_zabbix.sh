@@ -27,109 +27,134 @@ else
     ZABBIX_AGENT_PORT="10050"
     ZABBIX_DEBUG_LEVEL="3"
     ZABBIX_LOG_SIZE="10"
+    ZABBIX_STATIC_AGENT_URL="https://cdn.zabbix.com/zabbix/binaries/stable/7.0/7.0.25/zabbix_agent-7.0.25-linux-3.0-amd64-static.tar.gz"
 fi
 
 #==============================================================================
 # Funções Específicas do Zabbix
 #==============================================================================
 
-# Instalar repositório do Zabbix para Ubuntu
-install_zabbix_repo_ubuntu() {
-    local version="${ZABBIX_VERSION_UBUNTU:-7.0}"
-    local ubuntu_version
-    
-    # Detectar versão do Ubuntu
-    ubuntu_version=$(lsb_release -rs 2>/dev/null || echo "24.04")
-    
-    print_info "Instalando repositório Zabbix $version para Ubuntu $ubuntu_version..."
-    log_info "Instalando repositório Zabbix para Ubuntu"
-    
-    local repo_url="https://repo.zabbix.com/zabbix/${version}/ubuntu/pool/main/z/zabbix-release/zabbix-release_${version}-2+ubuntu${ubuntu_version}_all.deb"
-    local temp_deb="/tmp/zabbix-release.deb"
-    
-    # Baixar pacote do repositório
-    if ! wget -q "$repo_url" -O "$temp_deb" 2>> "$LOG_FILE"; then
-        print_warning "Falha ao baixar repositório específico, tentando versão genérica..."
-        repo_url="https://repo.zabbix.com/zabbix/${version}/ubuntu/pool/main/z/zabbix-release/zabbix-release_latest+ubuntu${ubuntu_version}_all.deb"
-        wget -q "$repo_url" -O "$temp_deb" 2>> "$LOG_FILE" || return 1
+# Caminho do PidFile (alinhado ao unit systemd)
+get_zabbix_pid_file() {
+    if [[ "$DISTRO" == "ubuntu" || "$DISTRO" == "debian" ]]; then
+        echo "/var/run/zabbix/zabbix_agentd.pid"
+    else
+        echo "/run/zabbix/zabbix_agentd.pid"
     fi
-    
-    # Instalar repositório
-    dpkg -i "$temp_deb" >> "$LOG_FILE" 2>&1
-    rm -f "$temp_deb"
-    
-    # Atualizar cache
-    apt-get update >> "$LOG_FILE" 2>&1
-    
-    print_success "Repositório Zabbix instalado"
-    log_success "Repositório Zabbix instalado para Ubuntu"
-    return 0
 }
 
-# Instalar repositório do Zabbix para Debian
-install_zabbix_repo_debian() {
-    local version="${ZABBIX_VERSION_DEBIAN:-6.0}"
-    local debian_version
-    
-    # Detectar versão do Debian
-    debian_version=$(lsb_release -rs 2>/dev/null || cat /etc/debian_version 2>/dev/null | cut -d'.' -f1 || echo "12")
-    
-    print_info "Instalando repositório Zabbix $version para Debian $debian_version..."
-    log_info "Instalando repositório Zabbix para Debian"
-    
-    local repo_url="https://repo.zabbix.com/zabbix/${version}/debian/pool/main/z/zabbix-release/zabbix-release_latest_${version}+debian${debian_version}_all.deb"
-    local temp_deb="/tmp/zabbix-release.deb"
-    
-    # Baixar pacote do repositório
-    print_info "Baixando pacote do repositório..."
-    if ! wget -q "$repo_url" -O "$temp_deb" 2>> "$LOG_FILE"; then
-        print_warning "Falha ao baixar versão latest, tentando formato alternativo..."
-        repo_url="https://repo.zabbix.com/zabbix/${version}/debian/pool/main/z/zabbix-release/zabbix-release_${version}-2+debian${debian_version}_all.deb"
-        wget -q "$repo_url" -O "$temp_deb" 2>> "$LOG_FILE" || return 1
-    fi
-    
-    # Instalar repositório
-    print_info "Instalando pacote do repositório..."
-    dpkg -i "$temp_deb" >> "$LOG_FILE" 2>&1
-    rm -f "$temp_deb"
-    
-    # Atualizar cache
-    print_info "Atualizando cache de pacotes..."
-    apt-get update >> "$LOG_FILE" 2>&1
-    
-    print_success "Repositório Zabbix instalado"
-    log_success "Repositório Zabbix instalado para Debian $debian_version"
-    return 0
-}
-
-# Instalar repositório do Zabbix para RHEL/Rocky/CentOS
-install_zabbix_repo_rhel() {
-    local version="${ZABBIX_VERSION_RHEL:-6.4}"
-    local rhel_version="${DISTRO_VERSION%%.*}"
-    local pkg_manager=$(get_package_manager)
-    
-    print_info "Instalando repositório Zabbix $version para RHEL/Rocky $rhel_version..."
-    log_info "Instalando repositório Zabbix para RHEL/Rocky"
-    
-    # Remover repositório antigo se existir
-    $pkg_manager remove -y zabbix-release >> "$LOG_FILE" 2>&1
-    
-    local repo_url="https://repo.zabbix.com/zabbix/${version}/rhel/${rhel_version}/x86_64/zabbix-release-${version}-1.el${rhel_version}.noarch.rpm"
-    
-    # Instalar repositório
-    $pkg_manager install -y "$repo_url" >> "$LOG_FILE" 2>&1
-    
-    if [ $? -ne 0 ]; then
-        print_error "Falha ao instalar repositório Zabbix"
-        log_error "Falha ao instalar repositório Zabbix"
+# Baixar URL para arquivo (wget ou curl)
+download_zabbix_tarball() {
+    local url="$1"
+    local dest="$2"
+    if command -v wget &>/dev/null; then
+        wget -q "$url" -O "$dest" >> "$LOG_FILE" 2>&1
+    elif command -v curl &>/dev/null; then
+        curl -fsSL "$url" -o "$dest" >> "$LOG_FILE" 2>&1
+    else
+        print_error "wget ou curl é necessário para baixar o agente Zabbix"
+        log_error "wget/curl não encontrado"
         return 1
     fi
-    
-    # Limpar e atualizar cache
-    $pkg_manager clean all >> "$LOG_FILE" 2>&1
-    
-    print_success "Repositório Zabbix instalado"
-    log_success "Repositório Zabbix instalado para RHEL/Rocky"
+}
+
+# Instalar binários estáticos oficiais e unit systemd (amd64)
+install_zabbix_static_binary() {
+    local url="${ZABBIX_STATIC_AGENT_URL:-https://cdn.zabbix.com/zabbix/binaries/stable/7.0/7.0.25/zabbix_agent-7.0.25-linux-3.0-amd64-static.tar.gz}"
+    local arch
+    arch=$(uname -m)
+    if [[ "$arch" != "x86_64" ]]; then
+        print_error "Este tarball é amd64 (x86_64); arquitetura atual: $arch"
+        log_error "Arquitetura não suportada para agente estático: $arch"
+        return 1
+    fi
+
+    print_info "Instalando Zabbix Agent a partir do tarball estático..."
+    log_info "Instalação estática Zabbix: $url"
+
+    if ! command -v tar &>/dev/null; then
+        print_error "Comando tar é necessário para extrair o agente Zabbix"
+        return 1
+    fi
+
+    print_info "Parando zabbix-agent se estiver em execução (atualização de binários)..."
+    systemctl stop zabbix-agent >> "$LOG_FILE" 2>&1 || true
+
+    if ! getent group zabbix &>/dev/null; then
+        groupadd -r zabbix >> "$LOG_FILE" 2>&1 || groupadd --system zabbix >> "$LOG_FILE" 2>&1 || {
+            print_error "Falha ao criar grupo zabbix"
+            return 1
+        }
+    fi
+    if ! getent passwd zabbix &>/dev/null; then
+        useradd -r -g zabbix -d /var/lib/zabbix -s /sbin/nologin zabbix >> "$LOG_FILE" 2>&1 || \
+        useradd --system -g zabbix -d /var/lib/zabbix -s /sbin/nologin zabbix >> "$LOG_FILE" 2>&1 || {
+            print_error "Falha ao criar usuário zabbix"
+            return 1
+        }
+    fi
+
+    local pid_file
+    pid_file=$(get_zabbix_pid_file)
+    local pid_dir
+    pid_dir=$(dirname "$pid_file")
+
+    mkdir -p /etc/zabbix/zabbix_agentd.d /var/log/zabbix "$pid_dir" >> "$LOG_FILE" 2>&1
+    chown -R zabbix:zabbix /etc/zabbix /var/log/zabbix "$pid_dir" >> "$LOG_FILE" 2>&1 || true
+
+    local tarball="/tmp/zabbix-agent-static.tar.gz"
+    rm -f "$tarball"
+    print_info "Baixando tarball..."
+    if ! download_zabbix_tarball "$url" "$tarball"; then
+        print_error "Falha ao baixar o agente Zabbix"
+        return 1
+    fi
+
+    local tmpdir
+    tmpdir=$(mktemp -d /tmp/zabbix-static.XXXXXX)
+    if ! tar -xzf "$tarball" -C "$tmpdir" >> "$LOG_FILE" 2>&1; then
+        print_error "Falha ao extrair tarball"
+        rm -rf "$tmpdir"
+        rm -f "$tarball"
+        return 1
+    fi
+
+    if [[ ! -f "$tmpdir/sbin/zabbix_agentd" ]]; then
+        print_error "Arquivo sbin/zabbix_agentd não encontrado no tarball"
+        rm -rf "$tmpdir"
+        rm -f "$tarball"
+        return 1
+    fi
+
+    install -m 755 "$tmpdir/sbin/zabbix_agentd" /usr/sbin/zabbix_agentd
+    [[ -f "$tmpdir/bin/zabbix_get" ]] && install -m 755 "$tmpdir/bin/zabbix_get" /usr/bin/zabbix_get
+    [[ -f "$tmpdir/bin/zabbix_sender" ]] && install -m 755 "$tmpdir/bin/zabbix_sender" /usr/bin/zabbix_sender
+
+    rm -rf "$tmpdir"
+    rm -f "$tarball"
+
+    print_info "Instalando unit systemd zabbix-agent..."
+    cat > /etc/systemd/system/zabbix-agent.service <<EOF
+[Unit]
+Description=Zabbix Agent
+After=network.target
+
+[Service]
+Type=forking
+PIDFile=$pid_file
+Restart=on-failure
+KillMode=control-group
+ExecStart=/usr/sbin/zabbix_agentd -c /etc/zabbix/zabbix_agentd.conf
+ExecReload=/bin/kill -HUP \$MAINPID
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    systemctl daemon-reload >> "$LOG_FILE" 2>&1
+
+    print_success "Binários Zabbix Agent (estático) instalados"
+    log_success "Agente Zabbix estático instalado"
     return 0
 }
 
@@ -139,6 +164,7 @@ create_zabbix_config() {
     local hostname=$(get_hostname)
     local ip_address=$(get_ip_address)
     local pid_file
+    pid_file=$(get_zabbix_pid_file)
     
     print_info "Criando arquivo de configuração do Zabbix..."
     log_info "Criando configuração do Zabbix Agent"
@@ -146,13 +172,6 @@ create_zabbix_config() {
     # Fazer backup do arquivo original se existir
     if [ -f "$config_file" ]; then
         backup_file "$config_file"
-    fi
-    
-    # Determinar caminho do PID file baseado na distribuição
-    if [[ "$DISTRO" == "ubuntu" || "$DISTRO" == "debian" ]]; then
-        pid_file="/var/run/zabbix/zabbix_agentd.pid"
-    else
-        pid_file="/run/zabbix/zabbix_agentd.pid"
     fi
     
     # Criar configuração
@@ -262,15 +281,8 @@ configure_firewall() {
 install_zabbix_ubuntu() {
     print_header "Instalação do Zabbix Agent - Ubuntu"
     
-    # Instalar repositório
-    if ! install_zabbix_repo_ubuntu; then
-        print_error "Falha ao instalar repositório Zabbix"
-        return 1
-    fi
-    
-    # Instalar agente
-    if ! install_package "zabbix-agent"; then
-        print_error "Falha ao instalar zabbix-agent"
+    if ! install_zabbix_static_binary; then
+        print_error "Falha ao instalar binários Zabbix (estático)"
         return 1
     fi
     
@@ -295,15 +307,8 @@ install_zabbix_ubuntu() {
 install_zabbix_debian() {
     print_header "Instalação do Zabbix Agent - Debian"
     
-    # Instalar repositório
-    if ! install_zabbix_repo_debian; then
-        print_error "Falha ao instalar repositório Zabbix"
-        return 1
-    fi
-    
-    # Instalar agente
-    if ! install_package "zabbix-agent"; then
-        print_error "Falha ao instalar zabbix-agent"
+    if ! install_zabbix_static_binary; then
+        print_error "Falha ao instalar binários Zabbix (estático)"
         return 1
     fi
     
@@ -328,15 +333,8 @@ install_zabbix_debian() {
 install_zabbix_rhel() {
     print_header "Instalação do Zabbix Agent - RHEL/Rocky/CentOS"
     
-    # Instalar repositório
-    if ! install_zabbix_repo_rhel; then
-        print_error "Falha ao instalar repositório Zabbix"
-        return 1
-    fi
-    
-    # Instalar agente
-    if ! install_package "zabbix-agent"; then
-        print_error "Falha ao instalar zabbix-agent"
+    if ! install_zabbix_static_binary; then
+        print_error "Falha ao instalar binários Zabbix (estático)"
         return 1
     fi
     
@@ -389,15 +387,16 @@ main() {
     fi
     
     # Instalar baseado na distribuição
+    local install_rc=1
     case "$DISTRO" in
         ubuntu)
-            install_zabbix_ubuntu
+            install_zabbix_ubuntu && install_rc=0
             ;;
         debian)
-            install_zabbix_debian
+            install_zabbix_debian && install_rc=0
             ;;
         rhel|centos|rocky|almalinux)
-            install_zabbix_rhel
+            install_zabbix_rhel && install_rc=0
             ;;
         *)
             print_error "Distribuição não suportada: $DISTRO"
@@ -406,7 +405,7 @@ main() {
             ;;
     esac
     
-    if [ $? -eq 0 ]; then
+    if [ "$install_rc" -eq 0 ]; then
         print_separator
         print_success "Instalação do Zabbix Agent concluída com sucesso!"
         print_info "Log salvo em: $LOG_FILE"
