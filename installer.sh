@@ -17,10 +17,8 @@ else
     exit 1
 fi
 
-# Carregar configurações
-if [ -f "$SCRIPT_DIR/config/settings.conf" ]; then
-    source "$SCRIPT_DIR/config/settings.conf"
-fi
+# Carregar configurações (settings.conf + settings.local.conf opcional)
+load_project_settings
 
 #==============================================================================
 # Funções do Menu
@@ -273,16 +271,21 @@ run_full_installation() {
 edit_settings() {
     print_header "Configurações"
     
-    local config_file="$SCRIPT_DIR/config/settings.conf"
+    local config_file="$SCRIPT_DIR/config/settings.local.conf"
+    local example_file="$SCRIPT_DIR/config/settings.local.conf.example"
     
     if [ ! -f "$config_file" ]; then
-        print_error "Arquivo de configuração não encontrado: $config_file"
-        pause_for_user
-        return 1
+        print_info "Criando config/settings.local.conf (não versionado; use para IPs e hostnames reais)."
+        if [ -f "$example_file" ]; then
+            cp "$example_file" "$config_file"
+        else
+            printf '%s\n' '# Sobrescreve config/settings.conf — veja comentários no exemplo na pasta config/' > "$config_file"
+        fi
     fi
     
     print_info "Abrindo arquivo de configuração..."
     print_warning "Edite com cuidado! Configurações incorretas podem causar falhas."
+    print_info "Valores em settings.local.conf sobrescrevem settings.conf e não vão para o Git."
     echo ""
     
     # Detectar editor disponível

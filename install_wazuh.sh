@@ -17,14 +17,13 @@ else
     exit 1
 fi
 
-# Carregar configurações
-if [ -f "$SCRIPT_DIR/config/settings.conf" ]; then
-    source "$SCRIPT_DIR/config/settings.conf"
-else
-    print_warning "Arquivo de configuração não encontrado, usando valores padrão"
+# Carregar configurações (settings.conf + settings.local.conf opcional)
+load_project_settings
+if [ -z "${WAZUH_MANAGER:-}" ]; then
+    print_warning "WAZUH_MANAGER não definido; usando exemplo (defina em config/settings.local.conf)"
     WAZUH_MANAGER="wazuh.example.com"
-    WAZUH_VERSION="4.14.0"
-    WAZUH_REVISION="1"
+    WAZUH_VERSION="${WAZUH_VERSION:-4.14.0}"
+    WAZUH_REVISION="${WAZUH_REVISION:-1}"
 fi
 
 #==============================================================================

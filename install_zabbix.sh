@@ -17,18 +17,17 @@ else
     exit 1
 fi
 
-# Carregar configurações
-if [ -f "$SCRIPT_DIR/config/settings.conf" ]; then
-    source "$SCRIPT_DIR/config/settings.conf"
-else
-    print_warning "Arquivo de configuração não encontrado, usando valores padrão"
-    ZABBIX_PROXY_SERVER="zabbix.example.com"
-    ZABBIX_SERVER_PORT="10051"
-    ZABBIX_AGENT_PORT="10050"
-    ZABBIX_DEBUG_LEVEL="3"
-    ZABBIX_LOG_SIZE="10"
-    ZABBIX_STATIC_AGENT_URL="https://cdn.zabbix.com/zabbix/binaries/stable/7.0/7.0.25/zabbix_agent-7.0.25-linux-3.0-amd64-static.tar.gz"
-    ZABBIX_RPM_BRANCH="7.0"
+# Carregar configurações (settings.conf + settings.local.conf opcional)
+load_project_settings
+if [ -z "${ZABBIX_PROXY_SERVER:-}" ]; then
+    print_warning "ZABBIX_PROXY_SERVER não definido; usando valores de exemplo (defina em config/settings.local.conf)"
+    ZABBIX_PROXY_SERVER="zabbix.example.local"
+    ZABBIX_SERVER_PORT="${ZABBIX_SERVER_PORT:-10051}"
+    ZABBIX_AGENT_PORT="${ZABBIX_AGENT_PORT:-10050}"
+    ZABBIX_DEBUG_LEVEL="${ZABBIX_DEBUG_LEVEL:-3}"
+    ZABBIX_LOG_SIZE="${ZABBIX_LOG_SIZE:-10}"
+    ZABBIX_STATIC_AGENT_URL="${ZABBIX_STATIC_AGENT_URL:-https://cdn.zabbix.com/zabbix/binaries/stable/7.0/7.0.25/zabbix_agent-7.0.25-linux-3.0-amd64-static.tar.gz}"
+    ZABBIX_RPM_BRANCH="${ZABBIX_RPM_BRANCH:-7.0}"
 fi
 
 #==============================================================================

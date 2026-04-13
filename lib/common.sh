@@ -77,6 +77,24 @@ init_logging() {
     log_info "Início da execução: $(date)"
 }
 
+# Carregar config/settings.conf e, em seguida, config/settings.local.conf (opcional, gitignored).
+# Use o .local para IPs/hostnames reais da sua infraestrutura sem versionar segredos ou topologia.
+load_project_settings() {
+    local sd="${SCRIPT_DIR:-}"
+    if [ -z "$sd" ] || [ ! -d "$sd/config" ]; then
+        return 0
+    fi
+    if [ -f "$sd/config/settings.conf" ]; then
+        # shellcheck disable=SC1091
+        source "$sd/config/settings.conf"
+    fi
+    if [ -f "$sd/config/settings.local.conf" ]; then
+        # shellcheck disable=SC1091
+        source "$sd/config/settings.local.conf"
+    fi
+    return 0
+}
+
 # Função para logar mensagens
 log_message() {
     local level="$1"
@@ -498,4 +516,5 @@ export -f is_package_installed install_package install_packages update_repositor
 export -f prompt_user prompt_password prompt_confirm
 export -f restart_service enable_service check_service_status
 export -f backup_file get_hostname get_ip_address get_fqdn
+export -f load_project_settings
 
