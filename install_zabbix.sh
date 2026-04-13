@@ -28,6 +28,7 @@ else
     ZABBIX_DEBUG_LEVEL="3"
     ZABBIX_LOG_SIZE="10"
     ZABBIX_STATIC_AGENT_URL="https://cdn.zabbix.com/zabbix/binaries/stable/7.0/7.0.25/zabbix_agent-7.0.25-linux-3.0-amd64-static.tar.gz"
+    ZABBIX_RPM_BRANCH="7.0"
 fi
 
 #==============================================================================
@@ -70,6 +71,58 @@ remove_zabbix_agent_package_if_installed() {
             fi
             ;;
     esac
+}
+
+# Instalar zabbix-agent via repositório oficial Zabbix (RPM). Usado em RHEL/CentOS/Rocky/Alma
+# em vez do tarball estático (linux-3.0-amd64-static), frequentemente incompatível com glibc em EL8+.
+install_zabbix_rhel_from_official_rpm() {
+    local rhel_major pkg_mgr release_url branch
+
+    detect_distro
+    rhel_major="${DISTRO_VERSION%%.*}"
+    if ! [[ "$rhel_major" =~ ^[0-9]+$ ]] || [ "$rhel_major" -lt 7 ] || [ "$rhel_major" -gt 9 ]; then
+        print_error "Versão RHEL não suportada para RPM Zabbix: ${DISTRO_VERSION} (major $rhel_major; use EL 7–9)"
+        log_error "RHEL major fora do intervalo: $rhel_major"
+        return 1
+    fi
+
+    branch="${ZABBIX_RPM_BRANCH:-7.0}"
+    pkg_mgr=$(get_package_manager)
+
+    print_info "Instalando Zabbix Agent via repositório RPM oficial (Zabbix $branch, el$rhel_major)..."
+    log_info "Zabbix RHEL RPM branch=$branch el=$rhel_major pkg=$pkg_mgr"
+
+    print_info "Parando zabbix-agent se estiver em execução..."
+    systemctl stop zabbix-agent >> "$LOG_FILE" 2>&1 || true
+
+    if [ -f /etc/systemd/system/zabbix-agent.service ]; then
+        print_info "Removendo unit em /etc/systemd/system (restaura o unit do pacote RPM)..."
+        systemctl disable zabbix-agent >> "$LOG_FILE" 2>&1 || true
+        rm -f /etc/systemd/system/zabbix-agent.service
+        systemctl daemon-reload >> "$LOG_FILE" 2>&1 || true
+        systemctl reset-failed zabbix-agent >> "$LOG_FILE" 2>&1 || true
+    fi
+
+    release_url="https://repo.zabbix.com/zabbix/${branch}/rhel/${rhel_major}/x86_64/zabbix-release-${branch}-1.el${rhel_major}.noarch.rpm"
+
+    print_info "Instalando zabbix-release..."
+    $pkg_mgr remove -y zabbix-release >> "$LOG_FILE" 2>&1 || true
+    if ! $pkg_mgr install -y "$release_url" >> "$LOG_FILE" 2>&1; then
+        print_error "Falha ao instalar zabbix-release ($release_url)"
+        log_error "Instalação zabbix-release falhou"
+        return 1
+    fi
+
+    print_info "Instalando pacote zabbix-agent..."
+    if ! $pkg_mgr install -y zabbix-agent >> "$LOG_FILE" 2>&1; then
+        print_error "Falha ao instalar o pacote zabbix-agent"
+        log_error "Instalação zabbix-agent falhou"
+        return 1
+    fi
+
+    print_success "Zabbix Agent instalado a partir do repositório oficial (RPM)"
+    log_success "zabbix-agent RPM instalado"
+    return 0
 }
 
 # Baixar URL para arquivo (wget ou curl)
@@ -377,8 +430,8 @@ install_zabbix_debian() {
 install_zabbix_rhel() {
     print_header "Instalação do Zabbix Agent - RHEL/Rocky/CentOS"
     
-    if ! install_zabbix_static_binary; then
-        print_error "Falha ao instalar binários Zabbix (estático)"
+    if ! install_zabbix_rhel_from_official_rpm; then
+        print_error "Falha ao instalar Zabbix Agent (repositório RPM oficial)"
         return 1
     fi
     
